@@ -1,0 +1,11 @@
+id,text,sentiment,confidence,word_count,category
+st_001,"MIT 128-Qubit Quantum Neural Network Milestone achieves major breakthrough in proteomics.",Positive,0.94,245,"AI & Technology"
+st_002,"Secret alien Underground Base Discovered under Manhattan subways causes widespread panic.",Negative,0.89,180,"World & Politics"
+st_003,"Global Central Banks complete wholesale digital currency cross-border settlement trial.",Neutral,0.92,310,"Business & Finance"
+st_004,"Guaranteed 500% Daily Return Crypto Scheme poses severe financial risk to investors.",Negative,0.91,150,"Business & Finance"
+st_005,"JWST confirms atmospheric water vapor on temperate exoplanet LHS 1140 b.",Positive,0.96,290,"Science & Space"
+st_006,"Miracle Pill claims to cure all chronic diseases overnight without medical evidence.",Negative,0.87,210,"Health & Medicine"
+st_007,"Renewable Energy accounts for record 30% of Global Grid power generation.",Positive,0.93,330,"Climate & Environment"
+st_008,"Federal Reserve holds benchmark interest rate steady amid balanced inflation data.",Neutral,0.95,275,"Business & Finance"
+st_009,"Clinical Trial shows promising 65% reduction in melanoma recurrence using mRNA vaccine.",Positive,0.97,340,"Health & Medicine"
+st_010,"Zero-Day vulnerability patched by international cybersecurity alliance team.",Positive,0.92,260,"AI & Technology"

@@ -1,0 +1,222 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Chronicle AI Enterprise News Intelligence Platform API",
+    "version": "2.4.0",
+    "description": "Production-ready REST and Machine Learning API endpoints for BART summarization, BERT classification, fake news auditing, and hybrid recommendations."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3000",
+      "description": "Local Development Server"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  },
+  "security": [
+    {
+      "BearerAuth": []
+    }
+  ],
+  "paths": {
+    "/api/auth/register": {
+      "post": {
+        "summary": "Register a new user account",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "email": { "type": "string" },
+                  "password": { "type": "string" }
+                },
+                "required": ["email", "password"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Successfully registered" }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "summary": "Authenticate user credentials",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": { "type": "string" },
+                  "password": { "type": "string" }
+                },
+                "required": ["email", "password"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Authentication successful" }
+        }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "summary": "Retrieve authenticated user details",
+        "responses": {
+          "200": { "description": "User details successfully returned" }
+        }
+      }
+    },
+    "/api/news": {
+      "get": {
+        "summary": "Fetch filtered and sorted news articles",
+        "parameters": [
+          { "name": "category", "in": "query", "schema": { "type": "string" } },
+          { "name": "search", "in": "query", "schema": { "type": "string" } },
+          { "name": "sentiment", "in": "query", "schema": { "type": "string" } },
+          { "name": "maxFakeRisk", "in": "query", "schema": { "type": "number" } },
+          { "name": "sort", "in": "query", "schema": { "type": "string" } },
+          { "name": "personalized", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "List of articles matching parameters" }
+        }
+      }
+    },
+    "/api/news/{id}": {
+      "get": {
+        "summary": "Get article detail by ID",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Article details returned" }
+        }
+      }
+    },
+    "/api/news/{id}/interact": {
+      "post": {
+        "summary": "Interact (like or bookmark) an article",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "action": { "type": "string", "enum": ["like", "bookmark"] }
+                },
+                "required": ["action"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Interaction complete" }
+        }
+      }
+    },
+    "/api/ai/summarize": {
+      "post": {
+        "summary": "BART & Gemini AI summary generator",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": { "type": "string" },
+                  "content": { "type": "string" }
+                },
+                "required": ["content"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "AI bullets and executive summaries successfully generated" }
+        }
+      }
+    },
+    "/api/ai/fake-news-check": {
+      "post": {
+        "summary": "BERT + XGBoost factuality and clickbait audit",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "text": { "type": "string" },
+                  "sourceDomain": { "type": "string" }
+                },
+                "required": ["text"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Misinformation confidence audit complete" }
+        }
+      }
+    },
+    "/api/ai/speech": {
+      "post": {
+        "summary": "Gemini TTS audio synthesis",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "text": { "type": "string" },
+                  "voiceName": { "type": "string" }
+                },
+                "required": ["text"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Synthesized audio returned in Base64" }
+        }
+      }
+    },
+    "/api/ai/recommendations": {
+      "get": {
+        "summary": "Vector content Hybrid recommendation list",
+        "responses": {
+          "200": { "description": "SaaS Personalized items" }
+        }
+      }
+    },
+    "/api/analytics": {
+      "get": {
+        "summary": "Retrieve user reading metrics and sentiments stats",
+        "responses": {
+          "200": { "description": "Analytical distributions" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+id,title,text,category,source,word_count,sentiment,label,prediction,confidence
+fn_001,"Quantum Computing breakthrough announced by MIT","Researchers at MIT have achieved a major quantum neural network milestone with 128 qubits.","AI & Technology",mit.edu,245,Positive,0,0,0.96
+fn_002,"Secret alien Underground Base Discovered in Manhattan","Unverified reports claim extraterrestrial underground tunnel network beneath subway lines.","World & Politics",viral-truth-blog.net,180,Negative,1,1,0.92
+fn_003,"Global Central Banks complete Cross-Border CBDC Trial","Project Agora demonstrates wholesale digital currency transfers across international borders.","Business & Finance",reuters.com,310,Neutral,0,0,0.94
+fn_004,"Guaranteed 500% Daily Return Crypto Scheme Launched","Promotional material promises impossible daily investment returns with zero risk.","Business & Finance",crypto-moon-claims.io,150,Positive,1,1,0.95
+fn_005,"JWST detects Water Vapor on Temperate Exoplanet","James Webb Telescope instruments confirm atmospheric composition of LHS 1140 b.","Science & Space",nasa.gov,290,Positive,0,0,0.97
+fn_006,"Miracle Pill Cures All Chronic Diseases Overnight","Social media posts claim secret herbal remedy replaces all modern pharmaceutical treatments.","Health & Medicine",health-secret-cure.org,210,Positive,1,1,0.91
+fn_007,"Renewable Energy accounts for 30% of Global Grid","International Energy Agency report tracks record solar and wind adoption rates in 2025.","Climate & Environment",iea.org,330,Positive,0,0,0.95
+fn_008,"Celebrity endorsing Fake AI Trading Bot Platform","Deepfake video impersonates famous tech CEO promoting high-frequency trading scam.","Entertainment & Culture",fake-celebrity-scams.com,195,Neutral,1,1,0.89
+fn_009,"Federal Reserve maintains Benchmark Interest Rate","FOMC meeting concludes with decision to hold interest rates steady amid inflation data.","Business & Finance",bloomberg.com,275,Neutral,0,0,0.96
+fn_010,"Billionaire buying entire Country to form New Micronation","Tabloid article claims tech mogul purchased island nation for private sovereignty.","World & Politics",sensational-tabloid.xyz,220,Positive,1,1,0.88

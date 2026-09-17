@@ -1,0 +1,6 @@
+{
+  "name": "Chronicle AI - Enterprise Personalized News & ML Platform",
+  "description": "Enterprise AI-Powered Personalized News Summarizer, Sentiment Analyzer, Fake News Detector, and Recommendation Platform",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

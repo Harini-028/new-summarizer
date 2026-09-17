@@ -1,0 +1,11 @@
+user_id,article_id,category,interaction,interaction_score,reading_time,liked,bookmarked,shared,timestamp
+usr_demo_001,art_quantum_101,"AI & Technology",complete_read,0.95,4.2,1,1,1,2026-08-10T08:15:00Z
+usr_demo_001,art_cbdc_202,"Business & Finance",view,0.60,1.8,0,1,0,2026-08-10T08:30:00Z
+usr_demo_001,art_jwst_303,"Science & Space",like,0.85,3.5,1,1,0,2026-08-10T08:45:00Z
+usr_demo_001,art_mrna_404,"Health & Medicine",bookmark,0.80,3.0,0,1,0,2026-08-10T09:00:00Z
+usr_demo_001,art_climate_505,"Climate & Environment",complete_read,0.90,4.5,1,0,1,2026-08-10T09:15:00Z
+usr_demo_002,art_fed_606,"Business & Finance",view,0.50,1.2,0,0,0,2026-08-10T09:30:00Z
+usr_demo_002,art_quantum_101,"AI & Technology",like,0.88,3.8,1,1,0,2026-08-10T09:45:00Z
+usr_demo_002,art_fusion_707,"Science & Space",complete_read,0.92,5.0,1,1,1,2026-08-10T10:00:00Z
+usr_demo_003,art_esports_808,"Entertainment & Culture",click,0.40,0.8,0,0,0,2026-08-10T10:15:00Z
+usr_demo_003,art_cyber_909,"AI & Technology",bookmark,0.82,2.9,1,1,0,2026-08-10T10:30:00Z

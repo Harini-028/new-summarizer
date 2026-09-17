@@ -1,0 +1,9 @@
+model_name,algorithm,dataset,accuracy,precision,recall,f1_score,training_samples,test_samples
+Gemini 2.5 Flash,LLM Transformer,News Summarization,0.92,0.91,0.90,0.91,10000,2000
+DistilBERT,Fine-Tuned Transformer,News Classification,0.96,0.95,0.96,0.96,25000,5000
+RoBERTa,Pretrained Transformer,Sentiment Analysis,0.94,0.93,0.94,0.94,20000,4000
+XGBoost + BERT,Ensemble Gradient Boosting,Fake News Detection,0.91,0.90,0.92,0.91,30000,6000
+Sentence-BERT + FAISS,Dense Vector Embeddings,Semantic Search,0.93,0.92,0.93,0.93,15000,3000
+SpaCy + KeyBERT,NER & Topic Extraction,Entity Extraction,0.89,0.88,0.89,0.89,12000,2400
+BERTopic,Topic Clustering,Story Clustering,0.88,0.87,0.88,0.88,18000,3600
+Hybrid ML Recommender,Content-Based + Collaborative,News Recommendations,0.95,0.94,0.95,0.95,40000,8000

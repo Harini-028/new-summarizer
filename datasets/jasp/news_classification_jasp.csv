@@ -1,0 +1,11 @@
+id,title,text,category,word_count,source,predicted_category,prediction_confidence
+nc_001,"MIT 128-Qubit Quantum Neural Network Milestone","Quantum computing researchers achieve 100x speedup in complex protein folding simulations.","AI & Technology",245,mit.edu,"AI & Technology",0.98
+nc_002,"Global Central Banks Complete CBDC Cross-Border Trial","Project Agora demonstrates wholesale digital currency transfers across international borders.","Business & Finance",310,reuters.com,"Business & Finance",0.95
+nc_003,"JWST Confirms Water Vapor on Exoplanet LHS 1140 b","James Webb Telescope instruments confirm atmospheric composition of LHS 1140 b exoplanet.","Science & Space",290,nasa.gov,"Science & Space",0.97
+nc_004,"Clinical Trial Shows Promise for mRNA Cancer Vaccine","Phase 3 trials demonstrate 65% reduction in melanoma recurrence using personalized mRNA.","Health & Medicine",340,thelancet.com,"Health & Medicine",0.96
+nc_005,"Global Climate Summit Reaches Consensus on Grid Transition","190 nations commit to tripling renewable energy storage capacity by 2030.","Climate & Environment",380,un.org,"Climate & Environment",0.94
+nc_006,"Federal Reserve Holds Benchmark Interest Rate Steady","FOMC meeting concludes with decision to maintain interest rates amid inflation data.","Business & Finance",275,bloomberg.com,"Business & Finance",0.96
+nc_007,"Autonomous AI Agents Pass Benchmark Reasoning Standard","DistilBERT and LLM agents achieve superior multi-step logic task execution scores.","AI & Technology",310,arxiv.org,"AI & Technology",0.97
+nc_008,"Global Championship Finals Set Record Streaming Numbers","Esports world finals draw over 85 million simultaneous viewers online.","Entertainment & Culture",220,espn.com,"Entertainment & Culture",0.93
+nc_009,"Commercial Fusion Reactor Achieves Net Energy Gain","Magnetic confinement fusion device sustains plasma output exceeding input energy.","Science & Space",360,nature.com,"Science & Space",0.95
+nc_010,"Cybersecurity Alliance Discovers Zero-Day Exploit Patch","Global security researchers neutralize critical vulnerability in open-source library.","AI & Technology",260,wired.com,"AI & Technology",0.94
