@@ -113,6 +113,7 @@ export interface IArticle extends Document {
   title: string;
   excerpt: string;
   content: string;
+  description?: string;
   category: CategoryType;
   source: {
     name: string;
@@ -120,11 +121,13 @@ export interface IArticle extends Document {
     domain: string;
     trustScore: number;
   };
+  sourceUrl?: string;
   author: string;
   publishedAt: Date;
   url: string;
   imageUrl: string;
   readTimeMinutes: number;
+  tags?: string[];
   aiSummary: {
     bullets: string[];
     executiveParagraph: string;
@@ -157,6 +160,11 @@ export interface IArticle extends Document {
   viewsCount: number;
   sourceType?: 'admin' | 'dataset' | 'api';
   status?: 'published' | 'draft';
+  isBreaking?: boolean;
+  isFeatured?: boolean;
+  isTrending?: boolean;
+  allowComments?: boolean;
+  aiProcessingStatus?: 'completed' | 'pending' | 'failed';
 }
 
 const ArticleSchema = new Schema<IArticle>({
@@ -206,7 +214,15 @@ const ArticleSchema = new Schema<IArticle>({
   sharesCount: { type: Number, default: 0 },
   viewsCount: { type: Number, default: 0 },
   sourceType: { type: String, enum: ['admin', 'dataset', 'api'], default: 'admin' },
-  status: { type: String, enum: ['published', 'draft'], default: 'published' }
+  status: { type: String, enum: ['published', 'draft'], default: 'published' },
+  description: { type: String, default: '' },
+  sourceUrl: { type: String, default: '' },
+  tags: { type: [String], default: [] },
+  isBreaking: { type: Boolean, default: false },
+  isFeatured: { type: Boolean, default: false },
+  isTrending: { type: Boolean, default: false },
+  allowComments: { type: Boolean, default: true },
+  aiProcessingStatus: { type: String, enum: ['completed', 'pending', 'failed'], default: 'completed' }
 });
 
 ArticleSchema.index({ title: 'text', excerpt: 'text', content: 'text' });

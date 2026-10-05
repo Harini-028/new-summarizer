@@ -16,7 +16,7 @@ import { findAvailablePort } from './server/ports';
 // Backend Modules
 import { connectDatabase, isMongoConnected, User, Article, ReadingLog, Bookmark, Notification, IArticle } from './server/db';
 import { connectRedis, cache } from './server/redis';
-import { initSocket, sendNotificationToUser, broadcastBreakingNews } from './server/socket';
+import { initSocket, sendNotificationToUser, broadcastBreakingNews, broadcastNewsPublished } from './server/socket';
 import { 
   handleRegister, 
   handleLogin, 
@@ -270,8 +270,11 @@ async function startServer() {
   });
 
   // Get single article by ID
-  app.get('/api/news/:id', async (req, res) => {
+  app.get('/api/news/:id', async (req, res, next) => {
     const articleId = req.params.id;
+    if (['recent', 'search', 'category', 'trends', 'missed', 'discovery', 'search-semantic'].includes(articleId)) {
+      return next();
+    }
     try {
       if (isMongoConnected()) {
         const article = await Article.findById(articleId);
@@ -1852,6 +1855,535 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
         { name: 'SpaCy NER Pipeline', task: 'Named Entity Recognition', framework: 'SpaCy 3.7', modelType: 'pretrained', status: 'healthy', metrics: { f1: 0.921, precision: 0.934, recall: 0.908 }, callsToday: 1420, avgLatencyMs: 45 }
       ]
     });
+  });
+
+  // --------------------------------------------------------------------------
+  // ADMIN NEWS MANAGEMENT APIs
+  // --------------------------------------------------------------------------
+
+  // Helper: Run AI processing pipeline on article content
+  const runAIProcessing = async (content: string, title: string, sourceDomain: string, existingCategory?: string) => {
+    let aiSummary: any = {
+      bullets: ['AI processing pending.'],
+      executiveParagraph: content.substring(0, 200) + '...',
+      keyTakeaway: 'Article saved. AI summary generation pending.'
+    };
+    let sentiment: any = { type: 'Neutral', score: 0, label: 'Pending Analysis', tone: 'Informative', politicalSpectrum: 'Center' };
+    let fakeNewsReport: any = { isLikelyFake: false, confidenceScore: 0, verdict: 'Needs Fact-Checking', redFlags: [], factCheckSources: [] };
+    let entities: any = { organizations: [], people: [], locations: [], keywords: [] };
+    let category = existingCategory || '';
+    let aiProcessingStatus: 'completed' | 'pending' | 'failed' = 'pending';
+
+    try {
+      // 1. Summarize via FastAPI
+      try {
+        const sumRes = await fetch(`${FASTAPI_URL}/summarize`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: content, title })
+        });
+        if (sumRes.ok) {
+          const data = await sumRes.json();
+          if (data.success && data.summary) aiSummary = data.summary;
+        }
+      } catch (e: any) { console.warn('FastAPI summarize offline:', e.message); }
+
+      // 2. Classify via FastAPI (only if no category selected)
+      if (!category) {
+        try {
+          const classRes = await fetch(`${FASTAPI_URL}/classify`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: content })
+          });
+          if (classRes.ok) {
+            const data = await classRes.json();
+            if (data.success && data.category) category = data.category;
+          }
+        } catch (e: any) { console.warn('FastAPI classify offline:', e.message); }
+      }
+
+      // 3. Sentiment via FastAPI
+      try {
+        const sentRes = await fetch(`${FASTAPI_URL}/sentiment`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: content })
+        });
+        if (sentRes.ok) {
+          const data = await sentRes.json();
+          if (data.success && data.sentiment) sentiment = data.sentiment;
+        }
+      } catch (e: any) { console.warn('FastAPI sentiment offline:', e.message); }
+
+      // 4. Fake News detection via FastAPI
+      try {
+        const fakeRes = await fetch(`${FASTAPI_URL}/fake-news`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: content, sourceDomain })
+        });
+        if (fakeRes.ok) {
+          const data = await fakeRes.json();
+          if (data.success && data.report) fakeNewsReport = mapFakeNewsReport(data.report);
+        }
+      } catch (e: any) { console.warn('FastAPI fake-news offline:', e.message); }
+
+      // 5. Keywords via FastAPI
+      try {
+        const kwRes = await fetch(`${FASTAPI_URL}/keywords`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: content })
+        });
+        if (kwRes.ok) {
+          const data = await kwRes.json();
+          if (data.success && data.keywords) entities.keywords = data.keywords;
+        }
+      } catch (e: any) { console.warn('FastAPI keywords offline:', e.message); }
+
+      // 6. Gemini fallback for summary if FastAPI didn't work
+      if (aiSummary.bullets[0] === 'AI processing pending.') {
+        try {
+          const ai = getAiClient();
+          if (ai) {
+            const prompt = `Analyze this news article and return a JSON:\n{\n  "bullets": ["3 crisp bullet points"],\n  "executiveParagraph": "2-3 sentence executive overview",\n  "keyTakeaway": "Single sentence actionable takeaway",\n  "sentiment": {"type": "Positive"|"Neutral"|"Negative", "score": number, "label": "Short label", "tone": "Descriptive tone"},\n  "entities": {"organizations": [], "people": [], "locations": [], "keywords": ["5 keywords"]}\n}\nTitle: ${title}\nContent: ${content.substring(0, 4000)}`;
+            const response = await ai.models.generateContent({
+              model: 'gemini-2.5-flash', contents: prompt,
+              config: { responseMimeType: 'application/json' }
+            });
+            const parsed = JSON.parse(response.text || '{}');
+            if (parsed.bullets) aiSummary = { bullets: parsed.bullets, executiveParagraph: parsed.executiveParagraph || aiSummary.executiveParagraph, keyTakeaway: parsed.keyTakeaway || aiSummary.keyTakeaway };
+            if (parsed.sentiment) sentiment = parsed.sentiment;
+            if (parsed.entities) entities = { ...entities, ...parsed.entities };
+          }
+        } catch (e: any) { console.warn('Gemini AI fallback failed:', e.message); }
+      }
+
+      aiProcessingStatus = 'completed';
+    } catch (e: any) {
+      console.error('AI processing pipeline error:', e.message);
+      aiProcessingStatus = 'failed';
+    }
+
+    if (!category) category = 'AI & Technology';
+    return { aiSummary, sentiment, fakeNewsReport, entities, category, aiProcessingStatus };
+  };
+
+  // Sanitize HTML content to prevent XSS
+  const sanitizeContent = (text: string): string => {
+    if (!text) return '';
+    return text
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+      .replace(/on\w+="[^"]*"/gi, '')
+      .replace(/on\w+='[^']*'/gi, '')
+      .replace(/javascript:/gi, '');
+  };
+
+  // POST /api/admin/news — Create new news article
+  app.post('/api/admin/news', authenticateToken, async (req: AuthRequest, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).json({ error: 'Access denied. Admin role required.' });
+      return;
+    }
+
+    const { title, description, content, author, sourceName, sourceUrl, category: inputCategory,
+            tags, imageUrl, publishedDate, publishedTime, status, isBreaking, isFeatured, allowComments } = req.body;
+
+    // Validation
+    if (!title || typeof title !== 'string' || title.trim().length < 3) {
+      res.status(400).json({ error: 'Title is required and must be at least 3 characters.' });
+      return;
+    }
+    if (!content || typeof content !== 'string' || content.trim().length < 10) {
+      res.status(400).json({ error: 'Content is required and must be at least 10 characters.' });
+      return;
+    }
+    if (!author || typeof author !== 'string' || author.trim().length < 2) {
+      res.status(400).json({ error: 'Author is required.' });
+      return;
+    }
+    if (!sourceName || typeof sourceName !== 'string') {
+      res.status(400).json({ error: 'Source name is required.' });
+      return;
+    }
+
+    const sanitizedContent = sanitizeContent(content.trim());
+    const sanitizedTitle = sanitizeContent(title.trim());
+    const sanitizedDesc = sanitizeContent((description || '').trim());
+
+    // Parse tags
+    const tagList = Array.isArray(tags) ? tags : (typeof tags === 'string' ? tags.split(',').map((t: string) => t.trim()).filter(Boolean) : []);
+
+    // Compute published date
+    let publishedAt: Date;
+    if (publishedDate) {
+      const timeStr = publishedTime || '00:00';
+      publishedAt = new Date(`${publishedDate}T${timeStr}:00`);
+      if (isNaN(publishedAt.getTime())) publishedAt = new Date();
+    } else {
+      publishedAt = new Date();
+    }
+
+    const sourceDomain = sourceUrl ? new URL(sourceUrl.startsWith('http') ? sourceUrl : `https://${sourceUrl}`).hostname : 'chronicle.ai';
+
+    // Run AI processing
+    const aiResults = await runAIProcessing(sanitizedContent, sanitizedTitle, sourceDomain, inputCategory);
+
+    const articleData: any = {
+      title: sanitizedTitle,
+      excerpt: sanitizedDesc || sanitizedContent.substring(0, 150) + '...',
+      description: sanitizedDesc,
+      content: sanitizedContent,
+      category: inputCategory || aiResults.category,
+      source: {
+        name: sourceName.trim(),
+        domain: sourceDomain,
+        trustScore: 90
+      },
+      sourceUrl: sourceUrl || '',
+      author: author.trim(),
+      publishedAt,
+      url: `https://chronicle.ai/news/art_${Date.now()}`,
+      imageUrl: imageUrl || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800',
+      readTimeMinutes: Math.max(1, Math.round(sanitizedContent.split(/\s+/).length / 200)),
+      tags: tagList,
+      aiSummary: aiResults.aiSummary,
+      sentiment: aiResults.sentiment,
+      fakeNewsReport: aiResults.fakeNewsReport,
+      entities: aiResults.entities,
+      status: status || 'draft',
+      isBreaking: !!isBreaking,
+      isFeatured: !!isFeatured,
+      allowComments: allowComments !== false,
+      sourceType: 'admin',
+      aiProcessingStatus: aiResults.aiProcessingStatus,
+      recommendationScore: 75
+    };
+
+    try {
+      if (isMongoConnected()) {
+        const article = new Article(articleData);
+        await article.save();
+
+        // If published, broadcast via Socket.io
+        if (status === 'published') {
+          broadcastNewsPublished(article.toObject());
+          if (isBreaking) {
+            broadcastBreakingNews(article.toObject());
+          }
+        }
+
+        // Invalidate news cache
+        try {
+          const keys = await cache.keys('news_list:*');
+          if (keys && keys.length > 0) {
+            for (const key of keys) await cache.del(key);
+          }
+        } catch (e) { /* Redis may be offline */ }
+
+        res.status(201).json({ success: true, article: article.toObject() });
+      } else {
+        const localArt = {
+          ...articleData,
+          id: 'art_' + Date.now(),
+          _id: 'art_' + Date.now(),
+          likesCount: 0,
+          bookmarksCount: 0,
+          sharesCount: 0,
+          viewsCount: 0,
+          publishedAt: publishedAt.toISOString()
+        };
+        SAMPLE_ARTICLES.unshift(localArt as any);
+
+        if (status === 'published') {
+          broadcastNewsPublished(localArt);
+          if (isBreaking) broadcastBreakingNews(localArt);
+        }
+
+        res.status(201).json({ success: true, article: localArt });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: 'Failed to save article: ' + e.message });
+    }
+  });
+
+  // GET /api/admin/news — Get all articles for admin (includes drafts)
+  app.get('/api/admin/news', authenticateToken, async (req: AuthRequest, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).json({ error: 'Access denied. Admin role required.' });
+      return;
+    }
+
+    try {
+      const { search, category, status: statusFilter, sort } = req.query;
+      let query: any = {};
+
+      if (category && category !== 'All') query.category = category;
+      if (statusFilter && statusFilter !== 'All') query.status = statusFilter;
+      if (search && typeof search === 'string' && search.trim()) {
+        const regex = new RegExp(search.trim(), 'i');
+        query.$or = [{ title: regex }, { excerpt: regex }, { author: regex }, { 'source.name': regex }];
+      }
+
+      let sortOpt: any = { publishedAt: -1 };
+      if (sort === 'oldest') sortOpt = { publishedAt: 1 };
+      if (sort === 'title') sortOpt = { title: 1 };
+
+      if (isMongoConnected()) {
+        const articles = await Article.find(query).sort(sortOpt).lean();
+        res.json({ total: articles.length, articles });
+      } else {
+        let filtered = [...SAMPLE_ARTICLES];
+        if (category && category !== 'All') filtered = filtered.filter(a => a.category === category);
+        if (search && typeof search === 'string') {
+          const q = search.toLowerCase();
+          filtered = filtered.filter(a => a.title.toLowerCase().includes(q) || a.excerpt.toLowerCase().includes(q));
+        }
+        res.json({ total: filtered.length, articles: filtered });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/admin/news/:id — Get single article for admin
+  app.get('/api/admin/news/:id', authenticateToken, async (req: AuthRequest, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).json({ error: 'Access denied. Admin role required.' });
+      return;
+    }
+
+    try {
+      if (isMongoConnected()) {
+        const article = await Article.findById(req.params.id);
+        if (!article) { res.status(404).json({ error: 'Article not found.' }); return; }
+        res.json(article.toObject());
+      } else {
+        const article = SAMPLE_ARTICLES.find(a => a.id === req.params.id);
+        if (!article) { res.status(404).json({ error: 'Article not found.' }); return; }
+        res.json(article);
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // PUT /api/admin/news/:id — Update article
+  app.put('/api/admin/news/:id', authenticateToken, async (req: AuthRequest, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).json({ error: 'Access denied. Admin role required.' });
+      return;
+    }
+
+    const updates = req.body;
+    if (updates.title) updates.title = sanitizeContent(updates.title);
+    if (updates.content) updates.content = sanitizeContent(updates.content);
+    if (updates.description) updates.description = sanitizeContent(updates.description);
+    if (updates.tags && typeof updates.tags === 'string') {
+      updates.tags = updates.tags.split(',').map((t: string) => t.trim()).filter(Boolean);
+    }
+
+    // Re-compute read time if content changed
+    if (updates.content) {
+      updates.readTimeMinutes = Math.max(1, Math.round(updates.content.split(/\s+/).length / 200));
+    }
+    // Update excerpt from description
+    if (updates.description) {
+      updates.excerpt = updates.description;
+    }
+
+    try {
+      if (isMongoConnected()) {
+        const article = await Article.findByIdAndUpdate(req.params.id, { $set: updates }, { new: true });
+        if (!article) { res.status(404).json({ error: 'Article not found.' }); return; }
+
+        // Invalidate cache
+        try { const keys = await cache.keys('news_list:*'); if (keys) for (const k of keys) await cache.del(k); } catch (e) {}
+
+        res.json({ success: true, article: article.toObject() });
+      } else {
+        const idx = SAMPLE_ARTICLES.findIndex(a => a.id === req.params.id);
+        if (idx === -1) { res.status(404).json({ error: 'Article not found.' }); return; }
+        Object.assign(SAMPLE_ARTICLES[idx], updates);
+        res.json({ success: true, article: SAMPLE_ARTICLES[idx] });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // DELETE /api/admin/news/:id — Delete article
+  app.delete('/api/admin/news/:id', authenticateToken, async (req: AuthRequest, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).json({ error: 'Access denied. Admin role required.' });
+      return;
+    }
+
+    try {
+      if (isMongoConnected()) {
+        const article = await Article.findById(req.params.id);
+        if (!article) { res.status(404).json({ error: 'Article not found.' }); return; }
+        await Article.deleteOne({ _id: req.params.id });
+
+        // Invalidate cache
+        try { const keys = await cache.keys('news_list:*'); if (keys) for (const k of keys) await cache.del(k); } catch (e) {}
+
+        res.json({ success: true, message: 'Article deleted successfully.' });
+      } else {
+        const idx = SAMPLE_ARTICLES.findIndex(a => a.id === req.params.id);
+        if (idx === -1) { res.status(404).json({ error: 'Article not found.' }); return; }
+        SAMPLE_ARTICLES.splice(idx, 1);
+        res.json({ success: true, message: 'Article deleted from local memory.' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // PATCH /api/admin/news/:id/publish — Publish an article
+  app.patch('/api/admin/news/:id/publish', authenticateToken, async (req: AuthRequest, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).json({ error: 'Access denied. Admin role required.' });
+      return;
+    }
+
+    try {
+      if (isMongoConnected()) {
+        const article = await Article.findByIdAndUpdate(
+          req.params.id,
+          { $set: { status: 'published', publishedAt: new Date() } },
+          { new: true }
+        );
+        if (!article) { res.status(404).json({ error: 'Article not found.' }); return; }
+
+        // Broadcast via Socket.io
+        broadcastNewsPublished(article.toObject());
+        if (article.isBreaking) broadcastBreakingNews(article.toObject());
+
+        // Invalidate cache
+        try { const keys = await cache.keys('news_list:*'); if (keys) for (const k of keys) await cache.del(k); } catch (e) {}
+
+        res.json({ success: true, article: article.toObject(), message: 'Article published successfully.' });
+      } else {
+        const art = SAMPLE_ARTICLES.find(a => a.id === req.params.id);
+        if (!art) { res.status(404).json({ error: 'Article not found.' }); return; }
+        (art as any).status = 'published';
+        (art as any).publishedAt = new Date().toISOString();
+        broadcastNewsPublished(art);
+        res.json({ success: true, article: art, message: 'Article published successfully.' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // PATCH /api/admin/news/:id/unpublish — Unpublish an article
+  app.patch('/api/admin/news/:id/unpublish', authenticateToken, async (req: AuthRequest, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).json({ error: 'Access denied. Admin role required.' });
+      return;
+    }
+
+    try {
+      if (isMongoConnected()) {
+        const article = await Article.findByIdAndUpdate(
+          req.params.id,
+          { $set: { status: 'draft' } },
+          { new: true }
+        );
+        if (!article) { res.status(404).json({ error: 'Article not found.' }); return; }
+
+        // Invalidate cache
+        try { const keys = await cache.keys('news_list:*'); if (keys) for (const k of keys) await cache.del(k); } catch (e) {}
+
+        res.json({ success: true, article: article.toObject(), message: 'Article unpublished.' });
+      } else {
+        const art = SAMPLE_ARTICLES.find(a => a.id === req.params.id);
+        if (!art) { res.status(404).json({ error: 'Article not found.' }); return; }
+        (art as any).status = 'draft';
+        res.json({ success: true, article: art, message: 'Article unpublished.' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // --------------------------------------------------------------------------
+  // PUBLIC NEWS APIs (for user-facing features)
+  // --------------------------------------------------------------------------
+
+  // GET /api/news/recent — Latest published articles
+  app.get('/api/news/recent', async (req, res) => {
+    try {
+      const limit = Math.min(parseInt(String(req.query.limit || '20'), 10), 50);
+
+      if (isMongoConnected()) {
+        const articles = await Article.find({ status: { $ne: 'draft' } })
+          .sort({ publishedAt: -1 })
+          .limit(limit)
+          .lean();
+        res.json({ total: articles.length, articles });
+      } else {
+        const filtered = SAMPLE_ARTICLES
+          .filter((a: any) => a.status !== 'draft')
+          .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())
+          .slice(0, limit);
+        res.json({ total: filtered.length, articles: filtered });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/news/category/:category — Articles by category (published only)
+  app.get('/api/news/category/:category', async (req, res) => {
+    try {
+      const cat = decodeURIComponent(req.params.category);
+      const limit = Math.min(parseInt(String(req.query.limit || '30'), 10), 100);
+
+      if (isMongoConnected()) {
+        const articles = await Article.find({ category: cat as any, status: { $ne: 'draft' } })
+          .sort({ publishedAt: -1 })
+          .limit(limit)
+          .lean();
+        res.json({ total: articles.length, articles });
+      } else {
+        const filtered = SAMPLE_ARTICLES
+          .filter((a: any) => a.category === cat && a.status !== 'draft')
+          .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())
+          .slice(0, limit);
+        res.json({ total: filtered.length, articles: filtered });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/news/search — Search published articles
+  app.get('/api/news/search', async (req, res) => {
+    try {
+      const q = String(req.query.q || '').trim();
+      if (!q) { res.status(400).json({ error: 'Search query parameter "q" is required.' }); return; }
+
+      const limit = Math.min(parseInt(String(req.query.limit || '30'), 10), 100);
+
+      if (isMongoConnected()) {
+        const regex = new RegExp(q, 'i');
+        const articles = await Article.find({
+          status: { $ne: 'draft' },
+          $or: [{ title: regex }, { excerpt: regex }, { content: regex }, { 'entities.keywords': regex }, { tags: regex }]
+        }).sort({ publishedAt: -1 }).limit(limit).lean();
+        res.json({ total: articles.length, articles });
+      } else {
+        const lq = q.toLowerCase();
+        const filtered = SAMPLE_ARTICLES
+          .filter((a: any) => a.status !== 'draft' && (
+            a.title.toLowerCase().includes(lq) ||
+            a.excerpt.toLowerCase().includes(lq) ||
+            a.entities?.keywords?.some((k: string) => k.toLowerCase().includes(lq))
+          ))
+          .slice(0, limit);
+        res.json({ total: filtered.length, articles: filtered });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
   });
 
   // Global 404 handler for API routes

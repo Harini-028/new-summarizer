@@ -59,12 +59,28 @@ export function sendNotificationToUser(userId: string, notification: any) {
 export function broadcastBreakingNews(article: any) {
   if (!ioInstance) return;
   ioInstance.emit('breaking_news', {
-    id: article.id || 'art_' + Date.now(),
+    id: article.id || article._id?.toString() || 'art_' + Date.now(),
     title: article.title,
     excerpt: article.excerpt,
     imageUrl: article.imageUrl,
     category: article.category,
     sourceName: article.source?.name || 'Chronicle Wire',
     publishedAt: new Date().toISOString()
+  });
+}
+
+export function broadcastNewsPublished(article: any) {
+  if (!ioInstance) return;
+  ioInstance.emit('news:published', {
+    id: article.id || article._id?.toString() || 'art_' + Date.now(),
+    title: article.title,
+    excerpt: article.excerpt || article.description,
+    imageUrl: article.imageUrl,
+    category: article.category,
+    author: article.author,
+    sourceName: article.source?.name || 'Chronicle Wire',
+    publishedAt: article.publishedAt || new Date().toISOString(),
+    isBreaking: article.isBreaking || false,
+    isFeatured: article.isFeatured || false
   });
 }

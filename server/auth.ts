@@ -12,7 +12,8 @@ export const memoryUserStore = new Map<string, any>(); // email -> user info
 
 // Pre-seed admin user in memory fallback
 const seedEmail = 'demo@chronicle.ai';
-memoryUserStore.set(seedEmail, {
+const adminEmail = 'admin@chronicle.ai';
+const adminUserObj = {
   id: 'usr_demo_001',
   name: 'Demo Admin',
   email: seedEmail,
@@ -25,7 +26,9 @@ memoryUserStore.set(seedEmail, {
   preferences: { ...INITIAL_USER_PROFILE.preferences },
   isVerified: true,
   createdAt: new Date()
-});
+};
+memoryUserStore.set(seedEmail, adminUserObj);
+memoryUserStore.set(adminEmail, { ...adminUserObj, id: 'usr_admin_001', email: adminEmail, passwordHash: bcrypt.hashSync('adminpassword', 10) });
 
 export interface AuthRequest extends Request {
   user?: {

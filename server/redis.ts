@@ -117,5 +117,22 @@ export const cache = {
       }
     }
     memoryCache.clear();
+  },
+
+  async keys(pattern: string): Promise<string[]> {
+    if (isRedisConnected && redisClient) {
+      try {
+        const k = await redisClient.keys(pattern);
+        return k.map(x => String(x));
+      } catch (e) {
+        // Fallback
+      }
+    }
+    const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
+    const matches: string[] = [];
+    for (const key of memoryCache.keys()) {
+      if (regex.test(key)) matches.push(key);
+    }
+    return matches;
   }
 };
