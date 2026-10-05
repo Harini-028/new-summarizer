@@ -1975,8 +1975,8 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
       .replace(/javascript:/gi, '');
   };
 
-  // POST /api/admin/news — Create new news article
-  app.post('/api/admin/news', authenticateToken, async (req: AuthRequest, res) => {
+  // POST /api/admin/news & POST /api/news — Create new news article
+  app.post(['/api/admin/news', '/api/news'], authenticateToken, async (req: AuthRequest, res) => {
     if (req.user?.role !== 'admin') {
       res.status(403).json({ error: 'Access denied. Admin role required.' });
       return;
