@@ -155,6 +155,8 @@ export interface IArticle extends Document {
   bookmarksCount: number;
   sharesCount: number;
   viewsCount: number;
+  sourceType?: 'admin' | 'dataset' | 'api';
+  status?: 'published' | 'draft';
 }
 
 const ArticleSchema = new Schema<IArticle>({
@@ -202,7 +204,9 @@ const ArticleSchema = new Schema<IArticle>({
   likesCount: { type: Number, default: 0 },
   bookmarksCount: { type: Number, default: 0 },
   sharesCount: { type: Number, default: 0 },
-  viewsCount: { type: Number, default: 0 }
+  viewsCount: { type: Number, default: 0 },
+  sourceType: { type: String, enum: ['admin', 'dataset', 'api'], default: 'admin' },
+  status: { type: String, enum: ['published', 'draft'], default: 'published' }
 });
 
 ArticleSchema.index({ title: 'text', excerpt: 'text', content: 'text' });

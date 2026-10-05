@@ -1,14 +1,15 @@
 import os
+import pickle
 import random
 import numpy as np
 import pandas as pd
 from typing import List, Dict, Any, Tuple
 
-# We will try to import heavy NLP libraries. If they are missing, we gracefully fall back
-# to fast heuristics or API-based lookups, ensuring 100% service uptime.
+MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_models")
+
 HAS_TRANSFORMERS = False
 try:
-    from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
+    from transformers import pipeline
     import torch
     HAS_TRANSFORMERS = True
 except ImportError:
@@ -30,14 +31,16 @@ except ImportError:
 
 class ChronicleMLModels:
     def __init__(self):
-        print("Initializing Chronicle ML Engine...")
-        self.device = 0 if HAS_TRANSFORMERS and torch.cuda.is_available() else -1
-        
-        # Load pipelines lazily to keep start-up time low
+        print("Initializing Chronicle ML Engine with Trained Model Pickles...")
+        self.device = 0 if HAS_TRANSFORMERS and 'torch' in globals() and torch.cuda.is_available() else -1
+
         self._summarizer = None
-        self._classifier = None
-        self._sentiment_analyzer = None
         
+        # Load trained pickle models if available
+        self.fake_news_model, self.fake_news_vec = self._load_model_pair("fake_news_model.pkl", "fake_news_vectorizer.pkl")
+        self.category_model, self.category_vec = self._load_model_pair("news_category_model.pkl", "news_category_vectorizer.pkl")
+        self.sentiment_model, self.sentiment_vec = self._load_model_pair("sentiment_model.pkl", "sentiment_vectorizer.pkl")
+
         if HAS_SPACY:
             try:
                 self.nlp = spacy.load("en_core_web_sm")
@@ -46,12 +49,25 @@ class ChronicleMLModels:
         else:
             self.nlp = None
 
+    def _load_model_pair(self, model_name: str, vec_name: str):
+        model_path = os.path.join(MODELS_DIR, model_name)
+        vec_path = os.path.join(MODELS_DIR, vec_name)
+        if os.path.exists(model_path) and os.path.exists(vec_path):
+            try:
+                with open(model_path, 'rb') as f_m, open(vec_path, 'rb') as f_v:
+                    m = pickle.load(f_m)
+                    v = pickle.load(f_v)
+                print(f"Loaded trained model artifact: {model_name}")
+                return m, v
+            except Exception as e:
+                print(f"Failed loading {model_name}: {e}")
+        return None, None
+
     def summarize(self, text: str) -> Dict[str, Any]:
-        """BART Summarization with fallback"""
+        """Article Summarization via Hugging Face BART or Extractive Fallback"""
         if not text or len(text.strip()) == 0:
             return {"bullets": [], "executiveParagraph": "", "keyTakeaway": ""}
 
-        # Attempt to use Hugging Face BART
         if HAS_TRANSFORMERS:
             try:
                 if self._summarizer is None:
@@ -60,17 +76,14 @@ class ChronicleMLModels:
                         model="facebook/bart-large-cnn", 
                         device=self.device
                     )
-                # Cap input to fit model context window
                 input_text = text[:1024]
                 summary = self._summarizer(input_text, max_length=130, min_length=30, do_sample=False)
                 exec_para = summary[0]['summary_text']
             except Exception as e:
-                print(f"BART Summary error, using fallback: {e}")
                 exec_para = self._fallback_summary(text)
         else:
             exec_para = self._fallback_summary(text)
 
-        # Post-process summary paragraph into bullet points and takeaways
         bullets = self._extract_bullets_from_text(text)
         takeaway = self._generate_key_takeaway(exec_para)
 
@@ -81,7 +94,15 @@ class ChronicleMLModels:
         }
 
     def classify_category(self, text: str) -> str:
-        """BERT Category Classification"""
+        """News Category Classification using trained model or keyword fallback"""
+        if self.category_model and self.category_vec:
+            try:
+                vec = self.category_vec.transform([text])
+                pred = self.category_model.predict(vec)[0]
+                return str(pred)
+            except Exception as e:
+                print(f"Trained category model inference error: {e}")
+
         categories = [
             'AI & Technology',
             'Business & Finance',
@@ -92,7 +113,6 @@ class ChronicleMLModels:
             'Entertainment & Culture'
         ]
         
-        # Simple keyword matching fallback
         text_lower = text.lower()
         keyword_map = {
             'AI & Technology': ['ai', 'quantum', 'tech', 'software', 'neural', 'cyber', 'robot', 'computer', 'apple', 'google', 'meta', 'nvidia'],
@@ -113,11 +133,33 @@ class ChronicleMLModels:
         if scores[best_cat] > 0:
             return best_cat
             
-        return random.choice(categories)
+        return categories[0]
 
     def analyze_sentiment(self, text: str) -> Dict[str, Any]:
-        """RoBERTa Sentiment Analysis"""
-        # Fallback dictionary-based sentiment analyzer
+        """Sentiment Analysis using trained model or lexicon fallback"""
+        if self.sentiment_model and self.sentiment_vec:
+            try:
+                vec = self.sentiment_vec.transform([text])
+                pred = self.sentiment_model.predict(vec)[0]
+                proba = self.sentiment_model.predict_proba(vec)[0] if hasattr(self.sentiment_model, "predict_proba") else [0.33, 0.33, 0.33]
+                conf = float(np.max(proba))
+                
+                s_type = str(pred)
+                score = conf if s_type == "Positive" else (-conf if s_type == "Negative" else 0.0)
+                
+                label = "Optimistic Outlook" if s_type == "Positive" else ("Cautionary Risk Flagged" if s_type == "Negative" else "Balanced Coverage")
+                tone = "Analytical" if s_type == "Positive" else ("Urgent" if s_type == "Negative" else "Informative")
+                
+                return {
+                    "type": s_type,
+                    "score": round(score, 2),
+                    "label": label,
+                    "tone": tone,
+                    "politicalSpectrum": "Center"
+                }
+            except Exception as e:
+                print(f"Trained sentiment model inference error: {e}")
+
         positive_words = {'breakthrough', 'success', 'growth', 'gain', 'advance', 'benefit', 'innovative', 'pioneer', 'optimistic', 'boost', 'rise', 'win'}
         negative_words = {'decline', 'scam', 'fraud', 'drop', 'fail', 'loss', 'crisis', 'risk', 'warn', 'threat', 'fake', 'crash', 'down'}
         
@@ -125,7 +167,6 @@ class ChronicleMLModels:
         pos_count = len(words.intersection(positive_words))
         neg_count = len(words.intersection(negative_words))
         
-        score = 0.0
         if pos_count > neg_count:
             score = min(0.9, 0.1 + (pos_count - neg_count) * 0.15)
             sentiment_type = "Positive"
@@ -141,166 +182,116 @@ class ChronicleMLModels:
             label = "Balanced Coverage"
             tone = "Informative"
             
-        political_spectrum = random.choice(['Left', 'Center-Left', 'Center', 'Center-Right', 'Right'])
-        
         return {
             "type": sentiment_type,
             "score": score,
             "label": label,
             "tone": tone,
-            "politicalSpectrum": political_spectrum
+            "politicalSpectrum": "Center"
         }
 
     def detect_fake_news(self, text: str, source_domain: str = "") -> Dict[str, Any]:
         """
-        BERT Embedding + XGBoost Factuality Classifier
-        Pipeline: Input text -> Cleaning -> Tokenization -> BERT Embeddings -> XGBoost Classification -> Confidence / Trust Scores -> Explanation
+        Fake News Detection using trained TF-IDF + Classifier or Rule Baseline
         """
-        # 1. Cleaning
         cleaned_text = text.strip().lower()
-        
-        # 2. Tokenization
-        tokens = cleaned_text.split()
-        if len(tokens) == 0:
+        if not cleaned_text:
             return {
                 "prediction": "REAL",
                 "confidence": 50.0,
                 "trustScore": 50.0,
                 "riskLevel": "LOW",
-                "explanation": "Empty input text.",
-                "model": "BERT + XGBoost",
+                "explanation": "Empty text.",
+                "model": "Trained TF-IDF Classifier",
                 "isLikelyFake": False,
                 "confidenceScore": 50.0,
-                "verdict": "Needs Fact-Checking",
+                "verdict": "Verified Authentic",
                 "factualityScore": 50.0,
                 "biasRating": "Minimal Bias",
                 "redFlags": [],
                 "reasoning": "Empty text provided."
             }
 
-        # 3. BERT Embeddings simulation / NLP feature weights
-        # We search for key semantic topics that simulate neural embeddings.
-        is_alien_story = any(w in cleaned_text for w in ["alien", "ufo", "extraterrestrial", "spacecraft", "flying saucer"])
-        is_nasa_rover_story = any(w in cleaned_text for w in ["nasa", "mars", "rover", "launch", "space exploration"])
-        
-        # 4. XGBoost Classification tree decision logic simulation
-        # Using specific lexical indicator nodes to simulate the tree classification splits.
-        if is_alien_story:
-            prediction = "FAKE"
-            confidence = round(random.uniform(93.5, 98.9), 1)
-            trust_score = round(100.0 - confidence, 1)
-            risk_level = "HIGH"
-            explanation = "Sensationalist reports alleging non-human alien contact or occupation of metropolitan areas. Cross-referenced snopes directories indicate zero supporting evidence."
-        elif is_nasa_rover_story:
-            prediction = "REAL"
-            confidence = round(random.uniform(94.0, 98.2), 1)
-            trust_score = round(confidence, 1)
-            risk_level = "LOW"
-            explanation = "Linguistic alignment matches standard scientific reporting channels. Cross-referenced directories confirm NASA missions and official launch records."
-        else:
-            # Default classifier using regular clickbait and word indicators
-            clickbait_words = ['shocking', 'unbelievable', 'secret underground', 'government hide', 'guaranteed returns', 'millionaires hate', 'secret tricks']
-            flags = [w for w in clickbait_words if w in cleaned_text]
-            
-            # Penalize flags and untrusted source domains
-            penalty = len(flags) * 15
-            if source_domain:
-                low_trust_domains = ['buzz-click', 'truth-unfiltered', 'claims.io', 'viral-news', 'blog.net']
-                if any(d in source_domain.lower() for d in low_trust_domains):
-                    penalty += 35
-                    flags.append(f"Domain '{source_domain}' in low-trust directory.")
-            
-            score = max(5.0, min(99.0, 92.0 - penalty))
-            if score < 60.0:
-                prediction = "FAKE"
-                confidence = round(100.0 - score, 1)
-                trust_score = round(score, 1)
-                risk_level = "HIGH"
-                explanation = f"Algorithm flagged {len(flags)} linguistic/domain misinformation indicators."
-            else:
-                prediction = "REAL"
-                confidence = round(score, 1)
-                trust_score = round(score, 1)
-                risk_level = "LOW"
-                explanation = "Linguistic factuality and word distributions match verified public record files."
+        if self.fake_news_model and self.fake_news_vec:
+            try:
+                vec = self.fake_news_vec.transform([cleaned_text])
+                pred_label = self.fake_news_model.predict(vec)[0]
+                proba = self.fake_news_model.predict_proba(vec)[0] if hasattr(self.fake_news_model, "predict_proba") else [0.5, 0.5]
+                
+                # Label 1 = FAKE, 0 = REAL
+                is_fake = (pred_label == 1)
+                fake_prob = float(proba[1]) if len(proba) > 1 else (0.9 if is_fake else 0.1)
+                real_prob = 1.0 - fake_prob
+                
+                confidence = round((fake_prob if is_fake else real_prob) * 100, 1)
+                trust_score = round(real_prob * 100, 1)
+                prediction = "FAKE" if is_fake else "REAL"
+                risk_level = "HIGH" if is_fake else "LOW"
+                verdict = "High Misinformation Risk" if is_fake else "Verified Authentic"
+                bias = "Partisan / Sensationalized" if is_fake else "Minimal Bias"
+                
+                explanation = (
+                    f"Trained TF-IDF classifier flagged text with {confidence}% confidence as "
+                    f"{verdict.lower()}. Empirical model trained on Kaggle fake news corpus."
+                )
 
-        # Return a merged result to satisfy both old UI keys and the new endpoint
+                return {
+                    "prediction": prediction,
+                    "confidence": confidence,
+                    "trustScore": trust_score,
+                    "riskLevel": risk_level,
+                    "explanation": explanation,
+                    "model": "Trained TF-IDF + Logistic Regression",
+                    "isLikelyFake": is_fake,
+                    "confidenceScore": confidence,
+                    "verdict": verdict,
+                    "factualityScore": trust_score,
+                    "biasRating": bias,
+                    "redFlags": ["Sensational vocabulary pattern detected"] if is_fake else [],
+                    "reasoning": explanation
+                }
+            except Exception as e:
+                print(f"Trained fake news model inference error: {e}")
+
+        # Fallback heuristic
+        clickbait = ['shocking', 'unbelievable', 'alien', 'secret underground', 'miracle cure', 'guaranteed returns']
+        flags = [w for w in clickbait if w in cleaned_text]
+        is_fake = len(flags) > 0
+        confidence = 88.0 if is_fake else 92.0
+        trust_score = 12.0 if is_fake else 92.0
+        prediction = "FAKE" if is_fake else "REAL"
+
         return {
             "prediction": prediction,
             "confidence": confidence,
             "trustScore": trust_score,
-            "riskLevel": risk_level,
-            "explanation": explanation,
-            "model": "BERT + XGBoost Classifier",
-            # Legacy/Frontend UI format mapping:
-            "isLikelyFake": prediction == "FAKE",
+            "riskLevel": "HIGH" if is_fake else "LOW",
+            "explanation": "Heuristic fallback rule analysis.",
+            "model": "Rule Heuristic",
+            "isLikelyFake": is_fake,
             "confidenceScore": confidence,
-            "verdict": "High Misinformation Risk" if prediction == "FAKE" else "Verified Authentic",
+            "verdict": "High Misinformation Risk" if is_fake else "Verified Authentic",
             "factualityScore": trust_score,
-            "biasRating": "Highly Partisan / Sensationalized" if prediction == "FAKE" else "Minimal Bias",
-            "redFlags": [f"sensationalist word choice" for _ in range(1)] if prediction == "FAKE" else [],
-            "reasoning": explanation
+            "biasRating": "Sensationalized" if is_fake else "Minimal Bias",
+            "redFlags": flags,
+            "reasoning": "Language patterns cross-referenced with misinformation indicators."
         }
 
     def recommend_articles(self, user_interests: List[str], read_history: List[str], articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Sentence-BERT hybrid recommendation engine"""
-        scored_articles = []
-        for art in articles:
-            score = 50 # Base score
-            
-            # 1. Interests Match
-            if art.get("category") in user_interests:
-                score += 30
-                
-            # 2. History filter (avoid showing recently read as top recommendations, or boost similar categories)
-            if art.get("id") in read_history:
-                score -= 40 # Demote read articles
-                
-            # 3. Source trust factor
-            trust = art.get("source", {}).get("trustScore", 80)
-            score += (trust - 80) * 0.5
-            
-            # 4. View counts / popularity boost
-            views = art.get("viewsCount", 0)
-            score += min(10, views * 0.05)
-            
-            # 5. Small randomization for discovery (avoid echo chamber)
-            score += random.randint(-5, 5)
-            
-            art_copy = dict(art)
-            art_copy["recommendationScore"] = int(max(0, min(100, score)))
-            scored_articles.append(art_copy)
-            
-        # Sort by score descending
-        scored_articles.sort(key=lambda x: x["recommendationScore"], reverse=True)
-        return scored_articles
+        from recommend_articles import rank_articles_for_user
+        return rank_articles_for_user(user_interests, read_history, articles)
 
     def extract_keywords(self, text: str) -> List[str]:
-        """KeyBERT-style keyword extraction"""
-        if HAS_SPACY and self.nlp:
-            doc = self.nlp(text[:2000])
-            nouns = [token.text.lower() for token in doc if token.pos_ in ("NOUN", "PROPN") and not token.is_stop]
-            # Get unique nouns sorted by frequency
-            freq = pd.Series(nouns).value_counts()
-            return list(freq.index[:5])
-        else:
-            # Fallback split & strip stop words
-            stops = {'the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 'to', 'of', 'in', 'on', 'at', 'by', 'for', 'with', 'about', 'against', 'between', 'into', 'through', 'during', 'before', 'after', 'above', 'below', 'from', 'up', 'down', 'in', 'out', 'on', 'off', 'over', 'under', 'again', 'further', 'then', 'once'}
-            words = [w.strip('.,!?;:"()').lower() for w in text.split() if len(w) > 3]
-            words = [w for w in words if w not in stops]
-            freq = pd.Series(words).value_counts()
-            return list(freq.index[:5])
+        stops = {'the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 'to', 'of', 'in', 'on', 'at', 'by', 'for', 'with'}
+        words = [w.strip('.,!?;:"()').lower() for w in text.split() if len(w) > 3]
+        words = [w for w in words if w not in stops]
+        freq = pd.Series(words).value_counts()
+        return list(freq.index[:5])
 
     def extract_topics(self, texts: List[str]) -> List[Dict[str, Any]]:
-        """BERTopic modeling clusters"""
-        if not texts:
-            return []
-        
-        # Fast K-means simulation for demo / fallback topic modeling
         themes = ["Quantum Computing", "AI Policy", "Clean Infrastructure", "Biotech Research", "Macroeconomics"]
         results = []
         for idx, text in enumerate(texts):
-            # Deterministic hash assignment
             theme = themes[sum(ord(c) for c in text[:10]) % len(themes)]
             results.append({
                 "articleIndex": idx,
@@ -312,17 +303,16 @@ class ChronicleMLModels:
 
     def _fallback_summary(self, text: str) -> str:
         sentences = text.split('.')
-        valid_sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
-        if len(valid_sentences) >= 2:
-            return valid_sentences[0] + ". " + valid_sentences[1] + "."
-        elif len(valid_sentences) == 1:
-            return valid_sentences[0] + "."
+        valid = [s.strip() for s in sentences if len(s.strip()) > 20]
+        if len(valid) >= 2:
+            return valid[0] + ". " + valid[1] + "."
+        elif len(valid) == 1:
+            return valid[0] + "."
         return "Executive news summary overview is currently processing for this story."
 
     def _extract_bullets_from_text(self, text: str) -> List[str]:
         sentences = text.split('.')
         valid = [s.strip() for s in sentences if len(s.strip()) > 30]
-        # Pick 3 sentences or mock them if not enough
         bullets = []
         for i in range(min(3, len(valid))):
             bullets.append(valid[i] + ".")
@@ -337,55 +327,17 @@ class ChronicleMLModels:
         return "Continuous monitoring of this sector event is advised for enterprise stakeholders."
 
     def semantic_search(self, query: str, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Sentence-BERT semantic search across articles"""
         if not query or not query.strip() or not articles:
             return articles
-            
-        # If Sentence Transformers is loaded, compute real embeddings and similarity
-        if HAS_SENTENCE_TRANSFORMERS:
-            try:
-                # Lazy load model if needed
-                if not hasattr(self, '_embedder') or self._embedder is None:
-                    self._embedder = SentenceTransformer('all-MiniLM-L6-v2')
-                
-                query_emb = self._embedder.encode(query, convert_to_tensor=True)
-                texts = [f"{a.get('title', '')} {a.get('excerpt', '')} {a.get('content', '')}" for a in articles]
-                doc_embs = self._embedder.encode(texts, convert_to_tensor=True)
-                
-                cos_scores = util.cos_sim(query_emb, doc_embs)[0].tolist()
-                
-                scored_articles = []
-                for idx, art in enumerate(articles):
-                    art_copy = dict(art)
-                    art_copy["similarityScore"] = round(cos_scores[idx], 4)
-                    scored_articles.append(art_copy)
-                
-                # Sort by score descending
-                scored_articles.sort(key=lambda x: x["similarityScore"], reverse=True)
-                return scored_articles
-            except Exception as e:
-                print(f"Sentence-BERT Search error, fallback to vocabulary cosine similarity: {e}")
-                
-        # Vocabulary Jaccard/frequency overlap fallback
         query_words = set(query.lower().split())
-        scored_articles = []
+        scored = []
         for art in articles:
-            text = f"{art.get('title', '')} {art.get('excerpt', '')} {art.get('content', '')}".lower()
-            text_words = text.split()
+            text = f"{art.get('title', '')} {art.get('content', '')}".lower()
+            text_words = set(text.split())
             intersection = query_words.intersection(text_words)
-            if len(query_words) > 0:
-                score = len(intersection) / len(query_words)
-            else:
-                score = 0.0
-            
-            title_lower = art.get('title', '').lower()
-            title_matches = len([w for w in query_words if w in title_lower])
-            score += title_matches * 0.15
-            
+            score = len(intersection) / len(query_words) if len(query_words) > 0 else 0.0
             art_copy = dict(art)
             art_copy["similarityScore"] = round(min(1.0, score), 4)
-            scored_articles.append(art_copy)
-            
-        scored_articles.sort(key=lambda x: x["similarityScore"], reverse=True)
-        return scored_articles
-
+            scored.append(art_copy)
+        scored.sort(key=lambda x: x["similarityScore"], reverse=True)
+        return scored
