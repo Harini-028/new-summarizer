@@ -1,19 +1,36 @@
 export type CategoryType = 
   | 'All'
+  | 'Technology'
+  | 'Artificial Intelligence'
+  | 'Business'
+  | 'Finance'
+  | 'Politics'
+  | 'Science'
+  | 'Health'
+  | 'Sports'
+  | 'Entertainment'
+  | 'World'
+  | 'India'
+  | 'Education'
+  | 'Environment'
+  | 'Other'
   | 'AI & Technology'
   | 'Business & Finance'
   | 'Science & Space'
   | 'Health & Medicine'
   | 'World & Politics'
   | 'Climate & Environment'
-  | 'Entertainment & Culture';
+  | 'Entertainment & Culture'
+  | string;
 
 export type SentimentType = 'Positive' | 'Neutral' | 'Negative';
 
 export interface Article {
   id: string;
+  _id?: string;
   title: string;
   excerpt: string;
+  description?: string;
   content: string;
   category: CategoryType;
   source: {
@@ -22,17 +39,28 @@ export interface Article {
     domain: string;
     trustScore: number; // 0 - 100
   };
+  sourceUrl?: string;
   author: string;
   publishedAt: string;
   url: string;
   imageUrl: string;
   readTimeMinutes: number;
+  tags?: string[];
+  status?: 'published' | 'draft';
+  sourceType?: 'admin' | 'dataset' | 'api';
+  
+  featuredImage?: string;
+  language?: string;
+  createdBy?: string;
+  updatedBy?: string;
   
   // AI / ML metadata
   aiSummary: {
     bullets: string[];
     executiveParagraph: string;
     keyTakeaway: string;
+    bulletPoints?: string[];
+    paragraph?: string;
   };
   sentiment: {
     type: SentimentType;
@@ -47,6 +75,10 @@ export interface Article {
     verdict: 'Verified Authentic' | 'Needs Fact-Checking' | 'High Misinformation Risk';
     redFlags: string[];
     factCheckSources: string[];
+    adminReviewStatus?: 'unreviewed' | 'verified_authentic' | 'flagged_misinformation' | 'needs_review' | 'pending' | 'verified' | 'flagged' | 'inconclusive';
+    reviewedBy?: string;
+    reviewedAt?: string;
+    reviewNotes?: string;
   };
   entities: {
     organizations: string[];
@@ -59,12 +91,16 @@ export interface Article {
   bookmarksCount: number;
   sharesCount: number;
   viewsCount: number;
+  views?: number;
   isBookmarked?: boolean;
   isLiked?: boolean;
   isBreaking?: boolean;
   isTrending?: boolean;
   isFeatured?: boolean;
   duplicateCount?: number; // number of similar articles
+  aiProcessingStatus?: 'completed' | 'pending' | 'failed';
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface UserProfile {

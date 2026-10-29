@@ -23,6 +23,7 @@ import { useAuth } from '../context/AuthContext';
 interface AuthPageProps {
   onSuccess: () => void;
   initialMode?: 'login' | 'register';
+  onBackToHome?: () => void;
 }
 
 const FEATURES = [
@@ -66,7 +67,7 @@ function PasswordStrength({ password }: { password: string }) {
   );
 }
 
-export default function AuthPage({ onSuccess, initialMode = 'login' }: AuthPageProps) {
+export default function AuthPage({ onSuccess, initialMode = 'login', onBackToHome }: AuthPageProps) {
   const { login, register, error, clearError, isLoading } = useAuth();
   const [mode, setMode] = useState<'login' | 'register' | 'forgot'>(initialMode);
 
@@ -106,6 +107,18 @@ export default function AuthPage({ onSuccess, initialMode = 'login' }: AuthPageP
         onSuccess();
       } else if (mode === 'login') {
         await login(email.trim(), password, remember);
+        const storedUser = localStorage.getItem('chronicle_user') || sessionStorage.getItem('chronicle_user');
+        const userObj = storedUser ? JSON.parse(storedUser) : null;
+        if (userObj && userObj.role === 'admin') {
+          const token = localStorage.getItem('chronicle_token') || sessionStorage.getItem('chronicle_token');
+          if (token) {
+            localStorage.setItem('chronicle_admin_token', token);
+            localStorage.setItem('chronicle_admin_user', JSON.stringify(userObj));
+          }
+          window.history.pushState({}, '', '/admin/dashboard');
+          window.location.href = '/admin/dashboard';
+          return;
+        }
         onSuccess();
       } else if (mode === 'forgot') {
         setLocalError('');
@@ -208,6 +221,18 @@ export default function AuthPage({ onSuccess, initialMode = 'login' }: AuthPageP
 
           {/* Card */}
           <div className="glass rounded-3xl p-8 shadow-2xl animate-slide-up">
+
+            {onBackToHome && (
+              <div className="mb-4">
+                <button
+                  type="button"
+                  onClick={onBackToHome}
+                  className="text-xs text-slate-500 hover:text-slate-300 font-mono transition-colors flex items-center gap-1.5 cursor-pointer"
+                >
+                  ← Back to Website
+                </button>
+              </div>
+            )}
 
             {/* Header */}
             <div className="mb-7">
@@ -410,6 +435,25 @@ export default function AuthPage({ onSuccess, initialMode = 'login' }: AuthPageP
             and{' '}
             <span className="text-slate-500 cursor-pointer hover:text-slate-400">Privacy Policy</span>.
           </p>
+
+          <div className="pt-2 border-t border-white/5 text-center">
+            <a
+              href="/admin/login"
+              onClick={(e) => {
+                e.preventDefault();
+                window.history.pushState({}, '', '/admin/login');
+                window.dispatchEvent(new PopStateEvent('popstate'));
+              }}
+              className="text-[11px] text-slate-500 hover:text-indigo-400 transition-colors inline-flex items-center gap-1.5 font-medium cursor-pointer"
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-indigo-400" />
+              <span>
+                {mode === 'login'
+                  ? 'Are you an administrator? Admin Login'
+                  : 'Administrator? Access Admin Portal'}
+              </span>
+            </a>
+          </div>
         </div>
       </div>
     </div>

@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import express from 'express';
+import jwt from 'jsonwebtoken';
 import path from 'path';
 import http from 'http';
 import helmet from 'helmet';
@@ -13,19 +14,26 @@ import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
 import { findAvailablePort } from './server/ports';
 
-// Backend Modules
+import mongoose from 'mongoose';
 import { connectDatabase, isMongoConnected, User, Article, ReadingLog, Bookmark, Notification, IArticle } from './server/db';
 import { connectRedis, cache } from './server/redis';
 import { initSocket, sendNotificationToUser, broadcastBreakingNews, broadcastNewsPublished } from './server/socket';
 import { 
   handleRegister, 
   handleLogin, 
+  handleAdminLogin,
+  handleAdminMe,
+  handleAdminSetupStatus,
+  handleFirstAdminSetup,
+  handleCreateAdminByAdmin,
   handleRefreshToken, 
   handleVerifyEmail, 
   handleForgotPassword, 
   handleResetPassword, 
   handleGoogleOAuth, 
   authenticateToken, 
+  requireAdmin,
+  ensureInitialAdminUser,
   AuthRequest,
   memoryUserStore
 } from './server/auth';
@@ -66,6 +74,7 @@ async function startServer() {
 
   // Initialize DB, Redis, and Sockets
   await connectDatabase();
+  await ensureInitialAdminUser();
   await connectRedis();
   initSocket(server);
 
@@ -83,14 +92,26 @@ async function startServer() {
     res.status(200).json({ status: 'ready', database: 'connected' });
   });
 
-  // Sync / Seed initial data to MongoDB if connected
+  // Sync / Seed initial data to MongoDB if connected (with duplicate check & preserving admin articles)
   if (isMongoConnected()) {
     try {
-      const artCount = await Article.countDocuments();
-      if (artCount === 0) {
-        console.log('Database empty. Seeding initial news articles...');
-        await Article.insertMany(SAMPLE_ARTICLES as any[]);
-        console.log(`Successfully seeded ${SAMPLE_ARTICLES.length} articles.`);
+      const existingArticles = await Article.find({}, { title: 1 }).lean();
+      const existingTitles = new Set(existingArticles.map(a => (a.title || '').toLowerCase().trim()));
+
+      const articlesToInsert = (SAMPLE_ARTICLES as any[])
+        .filter(art => art && art.title && !existingTitles.has(art.title.toLowerCase().trim()))
+        .map(art => ({
+          ...art,
+          sourceType: art.sourceType || 'dataset',
+          status: art.status || 'published'
+        }));
+
+      if (articlesToInsert.length > 0) {
+        console.log(`Database sync: inserting ${articlesToInsert.length} initial dataset news articles into MongoDB...`);
+        await Article.insertMany(articlesToInsert);
+        console.log(`Successfully seeded ${articlesToInsert.length} articles.`);
+      } else {
+        console.log('Database already populated. Preserving existing articles and admin-created news.');
       }
     } catch (e: any) {
       console.error('Error seeding database:', e.message);
@@ -131,12 +152,18 @@ async function startServer() {
   // --------------------------------------------------------------------------
   app.post('/api/auth/register', handleRegister);
   app.post('/api/auth/login', handleLogin);
+  app.post('/api/admin/login', handleAdminLogin);
+  app.post('/api/auth/admin-login', handleAdminLogin);
+  app.get('/api/admin/setup/status', handleAdminSetupStatus);
+  app.post(['/api/admin/setup/first-admin', '/api/admin/setup/register'], handleFirstAdminSetup);
+  app.post(['/api/admin/users/create-admin', '/api/admin/create-admin'], authenticateToken, requireAdmin, handleCreateAdminByAdmin);
   app.post('/api/auth/refresh', handleRefreshToken);
   app.post('/api/auth/verify-email', handleVerifyEmail);
   app.post('/api/auth/forgot-password', handleForgotPassword);
   app.post('/api/auth/reset-password', handleResetPassword);
   app.post('/api/auth/google', handleGoogleOAuth);
   
+  app.get('/api/admin/auth/me', authenticateToken, requireAdmin, handleAdminMe);
   app.get('/api/auth/me', authenticateToken, async (req: AuthRequest, res) => {
     if (!req.user) {
       res.status(401).json({ error: 'Not authenticated.' });
@@ -178,7 +205,7 @@ async function startServer() {
 
       let dbArticles: any[] = [];
       if (isMongoConnected()) {
-        const query: any = {};
+        const query: any = { status: { $ne: 'draft' } };
         if (category && category !== 'All') {
           query.category = category;
         }
@@ -197,10 +224,17 @@ async function startServer() {
             { 'entities.keywords': regex }
           ];
         }
-        dbArticles = await Article.find(query).lean();
+        const rawArticles = await Article.find(query).lean();
+        dbArticles = rawArticles.map(a => ({
+          ...a,
+          id: a._id ? a._id.toString() : (a as any).id
+        }));
       } else {
-        // Fallback
-        dbArticles = [...SAMPLE_ARTICLES];
+        // Fallback — strictly filter out unpublished/draft articles
+        dbArticles = SAMPLE_ARTICLES
+          .filter(a => ((a as any).status || 'published') !== 'draft')
+          .map(a => ({ ...a, id: a._id ? a._id.toString() : a.id }));
+
         if (category && category !== 'All') {
           dbArticles = dbArticles.filter(a => a.category === category);
         }
@@ -276,23 +310,56 @@ async function startServer() {
       return next();
     }
     try {
+      // Helper to check admin clearance
+      const isReqAdmin = () => {
+        const authHeader = req.headers['authorization'];
+        const token = authHeader && authHeader.split(' ')[1];
+        if (!token) return false;
+        try {
+          const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET || 'chr_access_secret_super_key') as any;
+          return decoded && decoded.role === 'admin';
+        } catch {
+          return false;
+        }
+      };
+
       if (isMongoConnected()) {
-        const article = await Article.findById(articleId);
+        const query = mongoose.Types.ObjectId.isValid(articleId)
+          ? { _id: articleId }
+          : { $or: [{ id: articleId }, { url: new RegExp(articleId, 'i') }] };
+
+        const article = await Article.findOne(query);
         if (!article) {
           res.status(404).json({ error: 'Article not found.' });
           return;
         }
-        article.viewsCount += 1;
-        await article.save();
-        res.json(article.toObject());
-      } else {
-        const article = SAMPLE_ARTICLES.find(a => a.id === articleId);
-        if (!article) {
-          res.status(404).json({ error: 'Article not found' });
+        // Protect draft articles from unauthenticated or regular users
+        if (article.status === 'draft' && !isReqAdmin()) {
+          res.status(404).json({ error: 'Article not found.' });
           return;
         }
-        article.viewsCount += 1;
-        res.json(article);
+        article.viewsCount = (article.viewsCount || 0) + 1;
+        await article.save();
+        res.json({
+          ...article.toObject(),
+          id: article._id.toString()
+        });
+      } else {
+        const article = SAMPLE_ARTICLES.find(a => a.id === articleId || (a as any)._id === articleId);
+        if (!article) {
+          res.status(404).json({ error: 'Article not found.' });
+          return;
+        }
+        // Protect draft articles from unauthenticated or regular users
+        if ((article as any).status === 'draft' && !isReqAdmin()) {
+          res.status(404).json({ error: 'Article not found.' });
+          return;
+        }
+        article.viewsCount = (article.viewsCount || 0) + 1;
+        res.json({
+          ...article,
+          id: (article as any)._id ? (article as any)._id.toString() : article.id
+        });
       }
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -694,9 +761,8 @@ async function startServer() {
     }
   });
 
-  // Summarize
-
-  app.post('/api/ai/summarize', async (req, res) => {
+  // Summarize (public and admin)
+  app.post(['/api/ai/summarize', '/api/admin/ai/summarize'], async (req, res) => {
     const { title, content } = req.body;
     if (!content) {
       res.status(400).json({ error: 'Content is required for AI summarization.' });
@@ -1142,12 +1208,7 @@ async function startServer() {
   });
 
   // Admin: Get users
-  app.get('/api/admin/users', authenticateToken, async (req: AuthRequest, res) => {
-    if (req.user?.role !== 'admin') {
-      res.status(403).json({ error: 'Access denied. Admin role required.' });
-      return;
-    }
-
+  app.get('/api/admin/users', authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
     try {
       if (isMongoConnected()) {
         const users = await User.find({}, 'name email role plan isVerified').lean();
@@ -1173,12 +1234,7 @@ async function startServer() {
   });
 
   // Admin: Get articles
-  app.get('/api/admin/articles', authenticateToken, async (req: AuthRequest, res) => {
-    if (req.user?.role !== 'admin') {
-      res.status(403).json({ error: 'Access denied. Admin role required.' });
-      return;
-    }
-
+  app.get('/api/admin/articles', authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
     try {
       if (isMongoConnected()) {
         const list = await Article.find().sort({ publishedAt: -1 }).lean();
@@ -1192,12 +1248,7 @@ async function startServer() {
   });
 
   // Admin: Update user details/roles
-  app.put('/api/admin/users/:id', authenticateToken, async (req: AuthRequest, res) => {
-    if (req.user?.role !== 'admin') {
-      res.status(403).json({ error: 'Access denied. Admin role required.' });
-      return;
-    }
-
+  app.put('/api/admin/users/:id', authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
     const { role, plan, isVerified } = req.body;
     const targetUserId = req.params.id;
 
@@ -1239,12 +1290,7 @@ async function startServer() {
   });
 
   // Admin: Delete article
-  app.delete('/api/admin/articles/:id', authenticateToken, async (req: AuthRequest, res) => {
-    if (req.user?.role !== 'admin') {
-      res.status(403).json({ error: 'Access denied. Admin role required.' });
-      return;
-    }
-
+  app.delete('/api/admin/articles/:id', authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
     const targetArticleId = req.params.id;
 
     try {
@@ -1272,12 +1318,7 @@ async function startServer() {
   });
 
   // Admin: Add article (with Socket.io alert broadcast)
-
-  app.post('/api/admin/articles', authenticateToken, async (req: AuthRequest, res) => {
-    if (req.user?.role !== 'admin') {
-      res.status(403).json({ error: 'Access denied. Admin role required.' });
-      return;
-    }
+  app.post('/api/admin/articles', authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
 
     const title = req.body.title || 'Untitled Article';
     const content = req.body.content || 'Full body text...';
@@ -1790,7 +1831,7 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
   });
 
   // Admin: News Sources Management
-  app.get('/api/admin/sources', async (req: AuthRequest, res) => {
+  app.get('/api/admin/sources', authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
     const sources = [
       { id: 'src_1', name: 'MIT Technology Review', domain: 'technologyreview.com', type: 'RSS', status: 'active', priority: 1, credibilityScore: 97, articlesPerDay: 142, lastFetchAt: new Date().toISOString() },
       { id: 'src_2', name: 'Financial Times', domain: 'ft.com', type: 'REST API', status: 'active', priority: 1, credibilityScore: 95, articlesPerDay: 89, lastFetchAt: new Date().toISOString() },
@@ -1802,19 +1843,17 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
     res.json({ sources, total: sources.length });
   });
 
-  app.post('/api/admin/sources', authenticateToken, async (req: AuthRequest, res) => {
-    if (req.user?.role !== 'admin') { res.status(403).json({ error: 'Admin required' }); return; }
+  app.post('/api/admin/sources', authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
     const { name, domain, type, priority } = req.body;
     res.json({ success: true, source: { id: 'src_' + Date.now(), name, domain, type, priority, status: 'active', credibilityScore: 75, articlesPerDay: 0, lastFetchAt: new Date().toISOString() } });
   });
 
-  app.put('/api/admin/sources/:id', authenticateToken, async (req: AuthRequest, res) => {
-    if (req.user?.role !== 'admin') { res.status(403).json({ error: 'Admin required' }); return; }
+  app.put('/api/admin/sources/:id', authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
     res.json({ success: true, sourceId: req.params.id, updates: req.body });
   });
 
   // Admin: Article Reports
-  app.get('/api/admin/reports', async (req, res) => {
+  app.get('/api/admin/reports', authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
     const mockReports = [
       { id: 'rpt_001', articleId: 'art_1', articleTitle: 'MIT Quantum Breakthrough Verified', reason: 'duplicate_article', details: 'Same story published twice', reportedAt: new Date(Date.now()-3600000).toISOString(), status: 'pending' },
       { id: 'rpt_002', articleId: 'art_2', articleTitle: 'GlycoRoot-X Diabetes Claim', reason: 'fake_information', details: 'This product makes impossible medical claims', reportedAt: new Date(Date.now()-7200000).toISOString(), status: 'reviewed' },
@@ -1976,11 +2015,7 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
   };
 
   // POST /api/admin/news & POST /api/news — Create new news article
-  app.post(['/api/admin/news', '/api/news'], authenticateToken, async (req: AuthRequest, res) => {
-    if (req.user?.role !== 'admin') {
-      res.status(403).json({ error: 'Access denied. Admin role required.' });
-      return;
-    }
+  app.post(['/api/admin/news', '/api/news'], authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
 
     const { title, description, content, author, sourceName, sourceUrl, category: inputCategory,
             tags, imageUrl, publishedDate, publishedTime, status, isBreaking, isFeatured, allowComments } = req.body;
@@ -1998,14 +2033,10 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
       res.status(400).json({ error: 'Author is required.' });
       return;
     }
-    if (!sourceName || typeof sourceName !== 'string') {
-      res.status(400).json({ error: 'Source name is required.' });
-      return;
-    }
-
+    const resolvedSourceName = (sourceName || req.body.source || '').trim() || 'Chronicle AI News';
     const sanitizedContent = sanitizeContent(content.trim());
     const sanitizedTitle = sanitizeContent(title.trim());
-    const sanitizedDesc = sanitizeContent((description || '').trim());
+    const sanitizedDesc = sanitizeContent((description || req.body.excerpt || '').trim());
 
     // Parse tags
     const tagList = Array.isArray(tags) ? tags : (typeof tags === 'string' ? tags.split(',').map((t: string) => t.trim()).filter(Boolean) : []);
@@ -2020,7 +2051,15 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
       publishedAt = new Date();
     }
 
-    const sourceDomain = sourceUrl ? new URL(sourceUrl.startsWith('http') ? sourceUrl : `https://${sourceUrl}`).hostname : 'chronicle.ai';
+    let sourceDomain = 'chronicle.ai';
+    if (sourceUrl && typeof sourceUrl === 'string' && sourceUrl.trim()) {
+      try {
+        const u = sourceUrl.startsWith('http') ? sourceUrl : `https://${sourceUrl}`;
+        sourceDomain = new URL(u).hostname || 'chronicle.ai';
+      } catch (e) {
+        sourceDomain = 'chronicle.ai';
+      }
+    }
 
     // Run AI processing
     const aiResults = await runAIProcessing(sanitizedContent, sanitizedTitle, sourceDomain, inputCategory);
@@ -2032,7 +2071,7 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
       content: sanitizedContent,
       category: inputCategory || aiResults.category,
       source: {
-        name: sourceName.trim(),
+        name: resolvedSourceName,
         domain: sourceDomain,
         trustScore: 90
       },
@@ -2040,10 +2079,10 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
       author: author.trim(),
       publishedAt,
       url: `https://chronicle.ai/news/art_${Date.now()}`,
-      imageUrl: imageUrl || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800',
+      imageUrl: imageUrl || 'https://images.unsplash.com/photo-1585829365295-ab7cd400c167?auto=format&fit=crop&q=80&w=1200',
       readTimeMinutes: Math.max(1, Math.round(sanitizedContent.split(/\s+/).length / 200)),
       tags: tagList,
-      aiSummary: aiResults.aiSummary,
+      aiSummary: (req.body.aiSummary && req.body.aiSummary.bullets && req.body.aiSummary.bullets.length > 0) ? req.body.aiSummary : aiResults.aiSummary,
       sentiment: aiResults.sentiment,
       fakeNewsReport: aiResults.fakeNewsReport,
       entities: aiResults.entities,
@@ -2052,8 +2091,17 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
       isFeatured: !!isFeatured,
       allowComments: allowComments !== false,
       sourceType: 'admin',
+      language: req.body.language || 'en',
+      featuredImage: req.body.featuredImage || imageUrl || '',
+      createdBy: req.user?.email || req.user?.id || 'admin',
+      updatedBy: req.user?.email || req.user?.id || 'admin',
       aiProcessingStatus: aiResults.aiProcessingStatus,
-      recommendationScore: 75
+      recommendationScore: 75,
+      likesCount: 0,
+      bookmarksCount: 0,
+      sharesCount: 0,
+      viewsCount: 0,
+      views: 0
     };
 
     try {
@@ -2061,11 +2109,16 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
         const article = new Article(articleData);
         await article.save();
 
+        const articleObj = {
+          ...article.toObject(),
+          id: article._id.toString()
+        };
+
         // If published, broadcast via Socket.io
         if (status === 'published') {
-          broadcastNewsPublished(article.toObject());
+          broadcastNewsPublished(articleObj);
           if (isBreaking) {
-            broadcastBreakingNews(article.toObject());
+            broadcastBreakingNews(articleObj);
           }
         }
 
@@ -2077,7 +2130,7 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
           }
         } catch (e) { /* Redis may be offline */ }
 
-        res.status(201).json({ success: true, article: article.toObject() });
+        res.status(201).json({ success: true, article: articleObj });
       } else {
         const localArt = {
           ...articleData,
@@ -2103,19 +2156,178 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
     }
   });
 
-  // GET /api/admin/news — Get all articles for admin (includes drafts)
-  app.get('/api/admin/news', authenticateToken, async (req: AuthRequest, res) => {
-    if (req.user?.role !== 'admin') {
-      res.status(403).json({ error: 'Access denied. Admin role required.' });
-      return;
-    }
+  // GET /api/admin/stats & GET /api/admin/news/stats — Get live counts directly from MongoDB Atlas or memory
+  app.get(['/api/admin/stats', '/api/admin/news/stats'], authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      if (isMongoConnected()) {
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
 
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+        const [
+          totalArticles,
+          publishedArticles,
+          draftArticles,
+          breakingNews,
+          featuredArticles,
+          totalRegisteredUsers,
+          articlesCreatedToday,
+          articlesUpdatedRecently,
+          articlesPendingReview,
+          byCategoryAggregation,
+          statusAggregation,
+          recentArticles
+        ] = await Promise.all([
+          Article.countDocuments({}),
+          Article.countDocuments({ status: 'published' }),
+          Article.countDocuments({ status: 'draft' }),
+          Article.countDocuments({ isBreaking: true }),
+          Article.countDocuments({ isFeatured: true }),
+          User.countDocuments({}),
+          Article.countDocuments({ $or: [{ createdAt: { $gte: startOfToday } }, { publishedAt: { $gte: startOfToday } }] }),
+          Article.countDocuments({ $or: [{ updatedAt: { $gte: sevenDaysAgo } }, { publishedAt: { $gte: sevenDaysAgo } }] }),
+          Article.countDocuments({ $or: [{ 'fakeNewsReport.verdict': 'Needs Fact-Checking' }, { 'fakeNewsReport.adminReviewStatus': 'needs_review' }, { status: 'draft' }] }),
+          Article.aggregate([
+            { $group: { _id: '$category', count: { $sum: 1 } } },
+            { $sort: { count: -1 } }
+          ]),
+          Article.aggregate([
+            { $group: { _id: '$status', count: { $sum: 1 } } }
+          ]),
+          Article.find({ status: 'published' }).sort({ publishedAt: -1 }).limit(100).select('publishedAt viewsCount').lean()
+        ]);
+
+        // Group publishedOverTime by day (last 7 days)
+        const daysMap = new Map<string, { count: number; views: number }>();
+        const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        for (let i = 6; i >= 0; i--) {
+          const d = new Date(Date.now() - i * 24 * 60 * 60 * 1000);
+          const key = dayNames[d.getDay()];
+          daysMap.set(key, { count: 0, views: 0 });
+        }
+        for (const art of recentArticles) {
+          const d = new Date(art.publishedAt);
+          const key = dayNames[d.getDay()];
+          if (daysMap.has(key)) {
+            const cur = daysMap.get(key)!;
+            cur.count += 1;
+            cur.views += (art.viewsCount || 0);
+          }
+        }
+        const publishedOverTime = Array.from(daysMap.entries()).map(([day, val]) => ({
+          day,
+          count: val.count,
+          reads: Math.round(val.views * 0.7) || (val.count * 15),
+          views: val.views || (val.count * 25)
+        }));
+
+        const articlesByCategory = byCategoryAggregation.map(c => ({
+          category: c._id || 'General',
+          count: c.count
+        }));
+
+        const statusColors: Record<string, string> = {
+          published: '#10b981',
+          draft: '#f59e0b'
+        };
+        const articleStatusDistribution = statusAggregation.map(s => ({
+          name: (s._id || 'published').charAt(0).toUpperCase() + (s._id || 'published').slice(1),
+          value: s.count,
+          color: statusColors[s._id] || '#6366f1'
+        }));
+
+        res.json({
+          totalArticles,
+          publishedArticles,
+          draftArticles,
+          breakingNews,
+          featuredArticles,
+          totalRegisteredUsers,
+          articlesCreatedToday,
+          articlesUpdatedRecently,
+          articlesPendingReview,
+          publishedOverTime,
+          articlesByCategory,
+          articleStatusDistribution
+        });
+      } else {
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+        const totalArticles = SAMPLE_ARTICLES.length;
+        const publishedArticles = SAMPLE_ARTICLES.filter((a: any) => ((a as any).status || 'published') === 'published').length;
+        const draftArticles = SAMPLE_ARTICLES.filter((a: any) => (a as any).status === 'draft').length;
+        const breakingNews = SAMPLE_ARTICLES.filter((a: any) => !!a.isBreaking).length;
+        const featuredArticles = SAMPLE_ARTICLES.filter((a: any) => !!a.isFeatured).length;
+        const totalRegisteredUsers = memoryUserStore.size || 1;
+        const articlesCreatedToday = SAMPLE_ARTICLES.filter((a: any) => new Date(a.createdAt || a.publishedAt) >= startOfToday).length;
+        const articlesUpdatedRecently = SAMPLE_ARTICLES.filter((a: any) => new Date(a.updatedAt || a.publishedAt) >= sevenDaysAgo).length;
+        const articlesPendingReview = SAMPLE_ARTICLES.filter((a: any) => a.fakeNewsReport?.verdict === 'Needs Fact-Checking' || (a as any).status === 'draft' || a.fakeNewsReport?.adminReviewStatus === 'needs_review').length;
+
+        const catMap = new Map<string, number>();
+        for (const art of SAMPLE_ARTICLES) {
+          const c = art.category || 'General';
+          catMap.set(c, (catMap.get(c) || 0) + 1);
+        }
+        const articlesByCategory = Array.from(catMap.entries()).map(([category, count]) => ({ category, count }));
+
+        const daysMap = new Map<string, { count: number; views: number }>();
+        const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        for (let i = 6; i >= 0; i--) {
+          const d = new Date(Date.now() - i * 24 * 60 * 60 * 1000);
+          daysMap.set(dayNames[d.getDay()], { count: 0, views: 0 });
+        }
+        for (const art of SAMPLE_ARTICLES) {
+          const d = new Date(art.publishedAt);
+          const key = dayNames[d.getDay()];
+          if (daysMap.has(key)) {
+            const cur = daysMap.get(key)!;
+            cur.count += 1;
+            cur.views += (art.viewsCount || 0);
+          }
+        }
+        const publishedOverTime = Array.from(daysMap.entries()).map(([day, val]) => ({
+          day,
+          count: val.count,
+          reads: Math.round(val.views * 0.7) || (val.count * 12),
+          views: val.views || (val.count * 20)
+        }));
+
+        const articleStatusDistribution = [
+          { name: 'Published', value: publishedArticles, color: '#10b981' },
+          { name: 'Draft', value: draftArticles, color: '#f59e0b' }
+        ];
+
+        res.json({
+          totalArticles,
+          publishedArticles,
+          draftArticles,
+          breakingNews,
+          featuredArticles,
+          totalRegisteredUsers,
+          articlesCreatedToday,
+          articlesUpdatedRecently,
+          articlesPendingReview,
+          publishedOverTime,
+          articlesByCategory,
+          articleStatusDistribution
+        });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: 'Failed to fetch news statistics: ' + e.message });
+    }
+  });
+
+  // GET /api/admin/news — Get all articles for admin (includes drafts)
+  app.get('/api/admin/news', authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
     try {
       const { search, category, status: statusFilter, sort } = req.query;
       let query: any = {};
 
       if (category && category !== 'All') query.category = category;
-      if (statusFilter && statusFilter !== 'All') query.status = statusFilter;
+      if (statusFilter && statusFilter !== 'All') query.status = statusFilter.toString().toLowerCase();
       if (search && typeof search === 'string' && search.trim()) {
         const regex = new RegExp(search.trim(), 'i');
         query.$or = [{ title: regex }, { excerpt: regex }, { author: regex }, { 'source.name': regex }];
@@ -2127,13 +2339,23 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
 
       if (isMongoConnected()) {
         const articles = await Article.find(query).sort(sortOpt).lean();
-        res.json({ total: articles.length, articles });
+        const formatted = articles.map(a => ({
+          ...a,
+          id: a._id ? a._id.toString() : (a as any).id
+        }));
+        res.json({ total: formatted.length, articles: formatted });
       } else {
         let filtered = [...SAMPLE_ARTICLES];
         if (category && category !== 'All') filtered = filtered.filter(a => a.category === category);
+        if (statusFilter && statusFilter !== 'All') filtered = filtered.filter(a => ((a as any).status || 'published') === statusFilter.toString().toLowerCase());
         if (search && typeof search === 'string') {
           const q = search.toLowerCase();
-          filtered = filtered.filter(a => a.title.toLowerCase().includes(q) || a.excerpt.toLowerCase().includes(q));
+          filtered = filtered.filter(a => a.title.toLowerCase().includes(q) || a.excerpt.toLowerCase().includes(q) || (a.author && a.author.toLowerCase().includes(q)));
+        }
+        if (sort === 'oldest') {
+          filtered.sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
+        } else {
+          filtered.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
         }
         res.json({ total: filtered.length, articles: filtered });
       }
@@ -2143,17 +2365,18 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
   });
 
   // GET /api/admin/news/:id — Get single article for admin
-  app.get('/api/admin/news/:id', authenticateToken, async (req: AuthRequest, res) => {
-    if (req.user?.role !== 'admin') {
-      res.status(403).json({ error: 'Access denied. Admin role required.' });
-      return;
-    }
-
+  app.get('/api/admin/news/:id', authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
     try {
       if (isMongoConnected()) {
-        const article = await Article.findById(req.params.id);
+        let article = null;
+        if (mongoose.Types.ObjectId.isValid(req.params.id)) {
+          article = await Article.findById(req.params.id).lean();
+        }
+        if (!article) {
+          article = await Article.findOne({ $or: [{ id: req.params.id }, { url: new RegExp(req.params.id) }] }).lean();
+        }
         if (!article) { res.status(404).json({ error: 'Article not found.' }); return; }
-        res.json(article.toObject());
+        res.json({ ...article, id: (article as any)._id?.toString() || (article as any).id });
       } else {
         const article = SAMPLE_ARTICLES.find(a => a.id === req.params.id);
         if (!article) { res.status(404).json({ error: 'Article not found.' }); return; }
@@ -2165,13 +2388,8 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
   });
 
   // PUT /api/admin/news/:id — Update article
-  app.put('/api/admin/news/:id', authenticateToken, async (req: AuthRequest, res) => {
-    if (req.user?.role !== 'admin') {
-      res.status(403).json({ error: 'Access denied. Admin role required.' });
-      return;
-    }
-
-    const updates = req.body;
+  app.put('/api/admin/news/:id', authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
+    const updates = { ...req.body };
     if (updates.title) updates.title = sanitizeContent(updates.title);
     if (updates.content) updates.content = sanitizeContent(updates.content);
     if (updates.description) updates.description = sanitizeContent(updates.description);
@@ -2190,13 +2408,27 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
 
     try {
       if (isMongoConnected()) {
-        const article = await Article.findByIdAndUpdate(req.params.id, { $set: updates }, { new: true });
+        const query = mongoose.Types.ObjectId.isValid(req.params.id)
+          ? { _id: req.params.id }
+          : { $or: [{ id: req.params.id }, { url: new RegExp(req.params.id) }] };
+
+        const article = await Article.findOneAndUpdate(query, { $set: updates }, { new: true });
         if (!article) { res.status(404).json({ error: 'Article not found.' }); return; }
+
+        const articleObj = {
+          ...article.toObject(),
+          id: article._id.toString()
+        };
+
+        if (article.status === 'published') {
+          broadcastNewsPublished(articleObj);
+          if (article.isBreaking) broadcastBreakingNews(articleObj);
+        }
 
         // Invalidate cache
         try { const keys = await cache.keys('news_list:*'); if (keys) for (const k of keys) await cache.del(k); } catch (e) {}
 
-        res.json({ success: true, article: article.toObject() });
+        res.json({ success: true, article: articleObj });
       } else {
         const idx = SAMPLE_ARTICLES.findIndex(a => a.id === req.params.id);
         if (idx === -1) { res.status(404).json({ error: 'Article not found.' }); return; }
@@ -2209,17 +2441,16 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
   });
 
   // DELETE /api/admin/news/:id — Delete article
-  app.delete('/api/admin/news/:id', authenticateToken, async (req: AuthRequest, res) => {
-    if (req.user?.role !== 'admin') {
-      res.status(403).json({ error: 'Access denied. Admin role required.' });
-      return;
-    }
-
+  app.delete('/api/admin/news/:id', authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
     try {
       if (isMongoConnected()) {
-        const article = await Article.findById(req.params.id);
+        const query = mongoose.Types.ObjectId.isValid(req.params.id)
+          ? { _id: req.params.id }
+          : { $or: [{ id: req.params.id }, { url: new RegExp(req.params.id) }] };
+
+        const article = await Article.findOne(query);
         if (!article) { res.status(404).json({ error: 'Article not found.' }); return; }
-        await Article.deleteOne({ _id: req.params.id });
+        await Article.deleteOne({ _id: article._id });
 
         // Invalidate cache
         try { const keys = await cache.keys('news_list:*'); if (keys) for (const k of keys) await cache.del(k); } catch (e) {}
@@ -2237,36 +2468,40 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
   });
 
   // PATCH /api/admin/news/:id/publish — Publish an article
-  app.patch('/api/admin/news/:id/publish', authenticateToken, async (req: AuthRequest, res) => {
-    if (req.user?.role !== 'admin') {
-      res.status(403).json({ error: 'Access denied. Admin role required.' });
-      return;
-    }
-
+  app.patch('/api/admin/news/:id/publish', authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
     try {
       if (isMongoConnected()) {
-        const article = await Article.findByIdAndUpdate(
-          req.params.id,
+        const query = mongoose.Types.ObjectId.isValid(req.params.id)
+          ? { _id: req.params.id }
+          : { $or: [{ id: req.params.id }, { url: new RegExp(req.params.id) }] };
+
+        const article = await Article.findOneAndUpdate(
+          query,
           { $set: { status: 'published', publishedAt: new Date() } },
           { new: true }
         );
         if (!article) { res.status(404).json({ error: 'Article not found.' }); return; }
 
+        const articleObj = {
+          ...article.toObject(),
+          id: article._id.toString()
+        };
+
         // Broadcast via Socket.io
-        broadcastNewsPublished(article.toObject());
-        if (article.isBreaking) broadcastBreakingNews(article.toObject());
+        broadcastNewsPublished(articleObj);
+        if (article.isBreaking) broadcastBreakingNews(articleObj);
 
         // Invalidate cache
         try { const keys = await cache.keys('news_list:*'); if (keys) for (const k of keys) await cache.del(k); } catch (e) {}
 
-        res.json({ success: true, article: article.toObject(), message: 'Article published successfully.' });
+        res.json({ success: true, article: articleObj, message: 'News article published successfully.' });
       } else {
         const art = SAMPLE_ARTICLES.find(a => a.id === req.params.id);
         if (!art) { res.status(404).json({ error: 'Article not found.' }); return; }
         (art as any).status = 'published';
         (art as any).publishedAt = new Date().toISOString();
         broadcastNewsPublished(art);
-        res.json({ success: true, article: art, message: 'Article published successfully.' });
+        res.json({ success: true, article: art, message: 'News article published successfully.' });
       }
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -2274,30 +2509,174 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
   });
 
   // PATCH /api/admin/news/:id/unpublish — Unpublish an article
-  app.patch('/api/admin/news/:id/unpublish', authenticateToken, async (req: AuthRequest, res) => {
-    if (req.user?.role !== 'admin') {
-      res.status(403).json({ error: 'Access denied. Admin role required.' });
-      return;
-    }
-
+  app.patch('/api/admin/news/:id/unpublish', authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
     try {
       if (isMongoConnected()) {
-        const article = await Article.findByIdAndUpdate(
-          req.params.id,
+        const query = mongoose.Types.ObjectId.isValid(req.params.id)
+          ? { _id: req.params.id }
+          : { $or: [{ id: req.params.id }, { url: new RegExp(req.params.id) }] };
+
+        const article = await Article.findOneAndUpdate(
+          query,
           { $set: { status: 'draft' } },
           { new: true }
         );
         if (!article) { res.status(404).json({ error: 'Article not found.' }); return; }
 
+        const articleObj = {
+          ...article.toObject(),
+          id: article._id.toString()
+        };
+
         // Invalidate cache
         try { const keys = await cache.keys('news_list:*'); if (keys) for (const k of keys) await cache.del(k); } catch (e) {}
 
-        res.json({ success: true, article: article.toObject(), message: 'Article unpublished.' });
+        res.json({ success: true, article: articleObj, message: 'Article unpublished.' });
       } else {
         const art = SAMPLE_ARTICLES.find(a => a.id === req.params.id);
         if (!art) { res.status(404).json({ error: 'Article not found.' }); return; }
         (art as any).status = 'draft';
         res.json({ success: true, article: art, message: 'Article unpublished.' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // PATCH /api/admin/news/:id/review — Record admin review decision for misinformation / fact-checking
+  app.patch('/api/admin/news/:id/review', authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
+    const { id } = req.params;
+    const { adminReviewStatus, verdict, confidenceScore, reviewNotes } = req.body;
+
+    try {
+      if (isMongoConnected()) {
+        const query = mongoose.Types.ObjectId.isValid(id)
+          ? { _id: id }
+          : { $or: [{ id: id }, { url: new RegExp(id) }] };
+
+        const article = await Article.findOne(query);
+        if (!article) { res.status(404).json({ error: 'Article not found.' }); return; }
+
+        if (!article.fakeNewsReport) {
+          article.fakeNewsReport = {
+            isLikelyFake: false,
+            confidenceScore: 90,
+            verdict: 'Verified Authentic',
+            redFlags: [],
+            factCheckSources: []
+          };
+        }
+
+        if (adminReviewStatus) (article.fakeNewsReport as any).adminReviewStatus = adminReviewStatus;
+        if (verdict) article.fakeNewsReport.verdict = verdict;
+        if (typeof confidenceScore === 'number') article.fakeNewsReport.confidenceScore = confidenceScore;
+        if (reviewNotes !== undefined) (article.fakeNewsReport as any).reviewNotes = reviewNotes;
+        (article.fakeNewsReport as any).reviewedBy = req.user?.email || req.user?.id || 'Admin';
+        (article.fakeNewsReport as any).reviewedAt = new Date();
+        article.updatedBy = req.user?.email || 'Admin';
+
+        if (verdict === 'High Misinformation Risk' || adminReviewStatus === 'flagged_misinformation') {
+          article.fakeNewsReport.isLikelyFake = true;
+        } else if (verdict === 'Verified Authentic' || adminReviewStatus === 'verified_authentic') {
+          article.fakeNewsReport.isLikelyFake = false;
+        }
+
+        await article.save();
+        res.json({
+          success: true,
+          article: { ...article.toObject(), id: article._id.toString() },
+          message: 'Misinformation review recorded successfully.'
+        });
+      } else {
+        const art = SAMPLE_ARTICLES.find(a => a.id === id);
+        if (!art) { res.status(404).json({ error: 'Article not found.' }); return; }
+
+        if (!art.fakeNewsReport) {
+          art.fakeNewsReport = {
+            isLikelyFake: false,
+            confidenceScore: 90,
+            verdict: 'Verified Authentic',
+            redFlags: [],
+            factCheckSources: []
+          };
+        }
+
+        if (adminReviewStatus) (art.fakeNewsReport as any).adminReviewStatus = adminReviewStatus;
+        if (verdict) art.fakeNewsReport.verdict = verdict;
+        if (typeof confidenceScore === 'number') art.fakeNewsReport.confidenceScore = confidenceScore;
+        if (reviewNotes !== undefined) (art.fakeNewsReport as any).reviewNotes = reviewNotes;
+        (art.fakeNewsReport as any).reviewedBy = req.user?.email || 'Admin';
+        (art.fakeNewsReport as any).reviewedAt = new Date().toISOString();
+
+        if (verdict === 'High Misinformation Risk' || adminReviewStatus === 'flagged_misinformation') {
+          art.fakeNewsReport.isLikelyFake = true;
+        } else if (verdict === 'Verified Authentic' || adminReviewStatus === 'verified_authentic') {
+          art.fakeNewsReport.isLikelyFake = false;
+        }
+
+        res.json({
+          success: true,
+          article: art,
+          message: 'Misinformation review recorded successfully.'
+        });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/admin/categories — Category statistics and distribution
+  app.get('/api/admin/categories', authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      if (isMongoConnected()) {
+        const [categoryCounts, totalArticles] = await Promise.all([
+          Article.aggregate([
+            {
+              $group: {
+                _id: '$category',
+                total: { $sum: 1 },
+                published: { $sum: { $cond: [{ $eq: ['$status', 'published'] }, 1, 0] } },
+                draft: { $sum: { $cond: [{ $eq: ['$status', 'draft'] }, 1, 0] } },
+                avgTrustScore: { $avg: '$fakeNewsReport.confidenceScore' }
+              }
+            },
+            { $sort: { total: -1 } }
+          ]),
+          Article.countDocuments({})
+        ]);
+
+        const categories = categoryCounts.map(c => ({
+          name: c._id || 'Uncategorized',
+          total: c.total,
+          published: c.published,
+          draft: c.draft,
+          avgTrustScore: Math.round(c.avgTrustScore || 85),
+          percentage: totalArticles > 0 ? Math.round((c.total / totalArticles) * 100) : 0
+        }));
+
+        res.json({ totalCategories: categories.length, totalArticles, categories });
+      } else {
+        const catMap = new Map<string, { total: number; published: number; draft: number; trustSum: number }>();
+        for (const art of SAMPLE_ARTICLES) {
+          const cat = art.category || 'General';
+          const existing = catMap.get(cat) || { total: 0, published: 0, draft: 0, trustSum: 0 };
+          existing.total += 1;
+          if ((art as any).status === 'draft') existing.draft += 1;
+          else existing.published += 1;
+          existing.trustSum += (art.fakeNewsReport?.confidenceScore || 85);
+          catMap.set(cat, existing);
+        }
+
+        const categories = Array.from(catMap.entries()).map(([name, data]) => ({
+          name,
+          total: data.total,
+          published: data.published,
+          draft: data.draft,
+          avgTrustScore: Math.round(data.trustSum / data.total),
+          percentage: Math.round((data.total / SAMPLE_ARTICLES.length) * 100)
+        })).sort((a, b) => b.total - a.total);
+
+        res.json({ totalCategories: categories.length, totalArticles: SAMPLE_ARTICLES.length, categories });
       }
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -2314,14 +2693,18 @@ Article: "${articleTitle}"\n${(articleContent || '').substring(0, 2500)}`;
       const limit = Math.min(parseInt(String(req.query.limit || '20'), 10), 50);
 
       if (isMongoConnected()) {
-        const articles = await Article.find({ status: { $ne: 'draft' } })
+        const articles = await Article.find({ status: 'published' })
           .sort({ publishedAt: -1 })
           .limit(limit)
           .lean();
-        res.json({ total: articles.length, articles });
+        const formatted = articles.map(a => ({
+          ...a,
+          id: a._id ? a._id.toString() : (a as any).id
+        }));
+        res.json({ total: formatted.length, articles: formatted });
       } else {
         const filtered = SAMPLE_ARTICLES
-          .filter((a: any) => a.status !== 'draft')
+          .filter((a: any) => a.status === 'published' || (!a.status && a.status !== 'draft'))
           .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())
           .slice(0, limit);
         res.json({ total: filtered.length, articles: filtered });

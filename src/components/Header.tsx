@@ -15,7 +15,8 @@ import {
   ChevronDown,
   LogIn,
   UserPlus,
-  X
+  X,
+  GitCompare
 } from 'lucide-react';
 import { UserProfile, ActivePage } from '../types';
 import { useAuth } from '../context/AuthContext';
@@ -143,6 +144,18 @@ export default function Header({
 
           {/* Mobile actions */}
           <div className="flex md:hidden items-center gap-2">
+            <a
+              href="/admin/login"
+              onClick={(e) => {
+                e.preventDefault();
+                window.history.pushState({}, '', '/admin/login');
+                window.dispatchEvent(new PopStateEvent('popstate'));
+              }}
+              className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-indigo-400 hover:bg-slate-800"
+              title="Admin Login"
+            >
+              <ShieldCheck className="w-4 h-4" />
+            </a>
             <button
               onClick={onToggleTheme}
               className="p-2 rounded-xl bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10"
@@ -225,6 +238,15 @@ export default function Header({
             <span className="hidden lg:inline">Daily Brief</span>
           </button>
 
+          {/* Compare Articles */}
+          <button
+            onClick={() => onNavigate('compare')}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/30 hover:bg-purple-500/20 transition-all uppercase tracking-wider cursor-pointer"
+          >
+            <GitCompare className="w-4 h-4" />
+            <span className="hidden lg:inline">Compare Articles</span>
+          </button>
+
           {/* Architecture */}
           <button
             onClick={onOpenArchitecture}
@@ -233,6 +255,21 @@ export default function Header({
             <FolderGit2 className="w-4 h-4" />
             <span className="hidden lg:inline">Architecture</span>
           </button>
+
+          {/* Admin Login */}
+          <a
+            href="/admin/login"
+            onClick={(e) => {
+              e.preventDefault();
+              window.history.pushState({}, '', '/admin/login');
+              window.dispatchEvent(new PopStateEvent('popstate'));
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-full bg-slate-900/90 hover:bg-indigo-950/50 text-slate-300 hover:text-white border border-slate-700/80 hover:border-indigo-500/50 transition-all uppercase tracking-wider cursor-pointer group shadow-sm"
+            title="Administrator Portal"
+          >
+            <ShieldCheck className="w-3.5 h-3.5 text-indigo-400 group-hover:scale-110 transition-transform" />
+            <span>Admin Login</span>
+          </a>
 
           <div className="h-5 w-px bg-white/10 my-auto mx-1" />
 

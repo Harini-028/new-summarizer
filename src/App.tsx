@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { io } from 'socket.io-client';
+import { ShieldCheck } from 'lucide-react';
 import { ActivePage, Article, UserProfile, CategoryType, MLTelemetry, DailyBrief } from './types';
 import { INITIAL_USER_PROFILE, INITIAL_ML_TELEMETRY, SAMPLE_DAILY_BRIEF } from './data/mockNewsData';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { AdminAuthProvider, useAdminAuth } from './context/AdminAuthContext';
 import { VoicePlayerProvider, useVoicePlayer } from './context/VoicePlayerContext';
 
 // Layout Components
@@ -21,6 +23,9 @@ import ReadingModeModal from './components/ReadingModeModal';
 // Pages (Dynamically loaded)
 const LandingPage = React.lazy(() => import('./pages/LandingPage'));
 const AuthPage = React.lazy(() => import('./pages/AuthPage'));
+const AdminLoginPage = React.lazy(() => import('./pages/AdminLoginPage'));
+const AdminRegisterPage = React.lazy(() => import('./pages/AdminRegisterPage'));
+const AdminForbiddenPage = React.lazy(() => import('./pages/AdminForbiddenPage'));
 const HomeFeed = React.lazy(() => import('./pages/HomeFeed'));
 const PersonalizedFeedPage = React.lazy(() => import('./pages/PersonalizedFeedPage'));
 const TrendingPage = React.lazy(() => import('./pages/TrendingPage'));
@@ -105,6 +110,16 @@ function AppInner() {
             icon: breakingArticle.imageUrl
           });
         }
+      });
+
+      socket.on('news:published', (publishedArticle: any) => {
+        console.log('Real-time published article received via socket:', publishedArticle);
+        setArticles(prev => {
+          if (prev.some(art => art.id === publishedArticle.id)) {
+            return prev.map(art => art.id === publishedArticle.id ? { ...art, ...publishedArticle, status: 'published' } : art);
+          }
+          return [publishedArticle, ...prev];
+        });
       });
 
       socket.on('notification', (newNotif: any) => {
@@ -280,6 +295,11 @@ function AppInner() {
   // Navigate — protected routes redirect to auth
   const PROTECTED_PAGES: ActivePage[] = ['personalized', 'history', 'saved', 'profile', 'admin', 'ai-chat'];
   const navigateTo = (page: ActivePage) => {
+    if (page === 'admin') {
+      window.history.pushState({}, '', '/admin/dashboard');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+      return;
+    }
     if (PROTECTED_PAGES.includes(page) && !isAuthenticated) {
       setActivePage('auth');
       return;
@@ -418,6 +438,8 @@ function AppInner() {
               <LandingPage
                 onNavigate={navigateTo}
                 onOpenAuth={() => setActivePage('auth')}
+                onOpenArticle={(art) => setReadingModeArticle(art)}
+                onOpenSummary={handleOpenSummary}
               />
             )}
 
@@ -643,6 +665,25 @@ function AppInner() {
               <GeoRadarPage />
             )}
 
+            {activePage !== 'landing' && (
+              <footer className="mt-16 py-6 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-500 gap-3 px-2">
+                <p>© 2026 Chronicle AI • Enterprise News Intelligence Platform</p>
+                <div className="flex items-center gap-4">
+                  <a
+                    href="/admin/login"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      window.history.pushState({}, '', '/admin/login');
+                      window.dispatchEvent(new PopStateEvent('popstate'));
+                    }}
+                    className="text-slate-500 hover:text-indigo-400 transition-colors flex items-center gap-1.5 font-medium cursor-pointer"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Admin Login</span>
+                  </a>
+                </div>
+              </footer>
+            )}
 
           </React.Suspense>
         </main>
@@ -704,13 +745,164 @@ function AppInner() {
   );
 }
 
-// ─── Root App wrapped with AuthProvider and VoicePlayerProvider ───────────────
+// ─── Root Router for Admin Routes & Public Portal ──────────────────────────
+function RootRouter() {
+  const [currentPath, setCurrentPath] = useState<string>(() => window.location.pathname);
+  const { adminUser, isAuthenticated: isAdminAuthenticated, isLoading: isAdminLoading } = useAdminAuth();
+  const { user: normalUser, isAuthenticated: isNormalAuthenticated, isLoading: isNormalLoading } = useAuth();
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setCurrentPath(window.location.pathname);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const navigateToPath = (path: string) => {
+    if (window.location.pathname !== path) {
+      window.history.pushState({}, '', path);
+    }
+    setCurrentPath(path);
+  };
+
+  const isAdminRoute = currentPath.startsWith('/admin');
+
+  // Automatically update browser URL to /admin/login if unauthenticated on protected admin route
+  useEffect(() => {
+    if (
+      isAdminRoute &&
+      currentPath !== '/admin/login' &&
+      currentPath !== '/admin/register' &&
+      !isAdminLoading &&
+      !isNormalLoading &&
+      !isAdminAuthenticated &&
+      !isNormalAuthenticated
+    ) {
+      window.history.replaceState({}, '', '/admin/login');
+      setCurrentPath('/admin/login');
+    }
+  }, [isAdminRoute, currentPath, isAdminLoading, isNormalLoading, isAdminAuthenticated, isNormalAuthenticated]);
+
+  if (isAdminRoute) {
+    // 1. Admin Registration / Setup Route
+    if (currentPath === '/admin/register') {
+      return (
+        <React.Suspense fallback={<PageLoader />}>
+          <AdminRegisterPage
+            onSuccess={() => navigateToPath('/admin/dashboard')}
+            onNavigateLogin={() => navigateToPath('/admin/login')}
+            onNavigateHome={() => navigateToPath('/')}
+          />
+        </React.Suspense>
+      );
+    }
+
+    // 2. Admin Login Route
+    if (currentPath === '/admin/login') {
+      if (isAdminLoading) {
+        return <PageLoader />;
+      }
+      if (isAdminAuthenticated && adminUser?.role === 'admin') {
+        return (
+          <React.Suspense fallback={<PageLoader />}>
+            <AdminDashboard
+              initialPath="/admin/dashboard"
+              onNavigate={navigateToPath}
+              onLogoutSuccess={() => navigateToPath('/admin/login')}
+            />
+          </React.Suspense>
+        );
+      }
+      return (
+        <React.Suspense fallback={<PageLoader />}>
+          <AdminLoginPage
+            onSuccess={() => navigateToPath('/admin/dashboard')}
+            onNavigateHome={() => navigateToPath('/')}
+          />
+        </React.Suspense>
+      );
+    }
+
+    // 3. Admin Protected Routes (/admin, /admin/dashboard, /admin/news, /admin/news/add, /admin/news/edit/:id)
+    if (isAdminLoading || isNormalLoading) {
+      return <PageLoader />;
+    }
+
+    // Authorized administrator
+    if (isAdminAuthenticated && adminUser?.role === 'admin') {
+      return (
+        <React.Suspense fallback={<PageLoader />}>
+          <AdminDashboard
+            initialPath={currentPath}
+            onNavigate={navigateToPath}
+            onLogoutSuccess={() => navigateToPath('/admin/login')}
+          />
+        </React.Suspense>
+      );
+    }
+
+    // Authenticated normal user attempting to access admin route -> 403 Forbidden
+    if (isNormalAuthenticated && normalUser && normalUser.role !== 'admin') {
+      return (
+        <React.Suspense fallback={<PageLoader />}>
+          <AdminForbiddenPage
+            onBackToHome={() => navigateToPath('/')}
+            onAdminLogin={() => navigateToPath('/admin/login')}
+          />
+        </React.Suspense>
+      );
+    }
+
+    // Unauthenticated user -> Redirect to admin login
+    return (
+      <React.Suspense fallback={<PageLoader />}>
+        <AdminLoginPage
+          onSuccess={() => navigateToPath('/admin/dashboard')}
+          onNavigateHome={() => navigateToPath('/')}
+        />
+      </React.Suspense>
+    );
+  }
+
+  // User Authentication Routes (/login, /signup, /register)
+  if (currentPath === '/login') {
+    return (
+      <React.Suspense fallback={<PageLoader />}>
+        <AuthPage
+          initialMode="login"
+          onSuccess={() => navigateToPath('/')}
+          onBackToHome={() => navigateToPath('/')}
+        />
+      </React.Suspense>
+    );
+  }
+
+  if (currentPath === '/signup' || currentPath === '/register') {
+    return (
+      <React.Suspense fallback={<PageLoader />}>
+        <AuthPage
+          initialMode="register"
+          onSuccess={() => navigateToPath('/')}
+          onBackToHome={() => navigateToPath('/')}
+        />
+      </React.Suspense>
+    );
+  }
+
+  // Normal Public Chronicle AI Portal
+  return <AppInner />;
+}
+
+// ─── Root App wrapped with AdminAuthProvider, AuthProvider and VoicePlayerProvider ───
 export default function App() {
   return (
-    <AuthProvider>
-      <VoicePlayerProvider>
-        <AppInner />
-      </VoicePlayerProvider>
-    </AuthProvider>
+    <AdminAuthProvider>
+      <AuthProvider>
+        <VoicePlayerProvider>
+          <RootRouter />
+        </VoicePlayerProvider>
+      </AuthProvider>
+    </AdminAuthProvider>
   );
 }

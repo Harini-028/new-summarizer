@@ -9,7 +9,9 @@ import {
   ShieldAlert, 
   Volume2, 
   ChevronRight,
-  ThumbsUp
+  ThumbsUp,
+  Flame,
+  Star
 } from 'lucide-react';
 import { Article } from '../types';
 
@@ -21,6 +23,8 @@ interface NewsCardProps {
   onInteract: (articleId: string, action: 'bookmark' | 'like') => void;
   layoutMode?: 'grid' | 'list' | 'compact';
 }
+
+const FALLBACK_NEWS_IMAGE = 'https://images.unsplash.com/photo-1585829365295-ab7cd400c167?auto=format&fit=crop&q=80&w=1200';
 
 export default function NewsCard({
   article,
@@ -46,7 +50,7 @@ export default function NewsCard({
   };
 
   // Fake news status
-  const isFactChecked = article.fakeNewsReport.confidenceScore >= 80;
+  const isFactChecked = (article.fakeNewsReport?.confidenceScore || 85) >= 80;
 
   if (layoutMode === 'compact') {
     return (
@@ -56,19 +60,27 @@ export default function NewsCard({
       >
         <div className="flex items-center gap-3 min-w-0">
           <img 
-            src={article.imageUrl} 
+            src={article.imageUrl || FALLBACK_NEWS_IMAGE} 
             alt={article.title} 
-            className="w-14 h-14 rounded-xl object-cover shrink-0 border border-white/10" 
+            onError={(e) => { (e.currentTarget as HTMLImageElement).src = FALLBACK_NEWS_IMAGE; }}
+            className="w-14 h-14 rounded-xl object-cover shrink-0 border border-white/10 bg-slate-900" 
           />
           <div className="min-w-0">
-            <span className="text-[10px] font-extrabold text-indigo-400 uppercase tracking-widest block">
-              {article.category}
-            </span>
+            <div className="flex items-center gap-1.5">
+              {article.isBreaking && (
+                <span className="px-1.5 py-0.5 rounded text-[8px] font-extrabold bg-rose-600 text-white uppercase tracking-wider animate-pulse flex items-center gap-0.5">
+                  <Flame className="w-2 h-2" /> BREAKING
+                </span>
+              )}
+              <span className="text-[10px] font-extrabold text-indigo-400 uppercase tracking-widest block">
+                {article.category}
+              </span>
+            </div>
             <h4 className="text-xs font-bold text-white group-hover:text-indigo-300 transition-colors line-clamp-1">
               {article.title}
             </h4>
             <p className="text-[11px] text-slate-400 line-clamp-1 mt-0.5">
-              {article.aiSummary.keyTakeaway}
+              {article.aiSummary?.keyTakeaway || article.excerpt}
             </p>
           </div>
         </div>
@@ -90,19 +102,32 @@ export default function NewsCard({
         layoutMode === 'list' ? 'w-full md:w-64 h-48 md:h-auto shrink-0' : 'w-full h-48'
       }`}>
         <img 
-          src={article.imageUrl} 
+          src={article.imageUrl || FALLBACK_NEWS_IMAGE} 
           alt={article.title} 
-          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+          onError={(e) => { (e.currentTarget as HTMLImageElement).src = FALLBACK_NEWS_IMAGE; }}
+          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500 bg-slate-900"
         />
         <div className="absolute inset-0 bg-gradient-to-t from-[#050505]/90 via-transparent to-transparent" />
         
         {/* Top Badges */}
-        <div className="absolute top-3 left-3 flex items-center gap-2">
+        <div className="absolute top-3 left-3 flex items-center gap-2 flex-wrap">
+          {article.isBreaking && (
+            <span className="px-2.5 py-1 text-[10px] font-extrabold tracking-wider uppercase bg-rose-600 text-white rounded-full shadow-lg flex items-center gap-1 animate-pulse border border-rose-400/50">
+              <Flame className="w-3 h-3 fill-amber-300 text-amber-300" />
+              BREAKING NEWS
+            </span>
+          )}
+          {article.isFeatured && (
+            <span className="px-2.5 py-1 text-[10px] font-extrabold tracking-wider uppercase bg-purple-600 text-white rounded-full shadow-lg flex items-center gap-1 border border-purple-400/50">
+              <Star className="w-3 h-3 fill-amber-300 text-amber-300" />
+              FEATURED
+            </span>
+          )}
           <span className="px-3 py-1 text-[10px] font-extrabold tracking-wider uppercase bg-indigo-600 text-white rounded-full shadow">
             {article.category}
           </span>
-          <span className={`px-2.5 py-1 text-[10px] font-bold rounded-full border backdrop-blur-md ${sentimentColorMap[article.sentiment.type]}`}>
-            {article.sentiment.label}
+          <span className={`px-2.5 py-1 text-[10px] font-bold rounded-full border backdrop-blur-md ${sentimentColorMap[article.sentiment?.type || 'Neutral']}`}>
+            {article.sentiment?.label || 'Verified'}
           </span>
         </div>
 
@@ -113,7 +138,7 @@ export default function NewsCard({
           ) : (
             <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
           )}
-          <span>{article.fakeNewsReport.confidenceScore}% Trust</span>
+          <span>{article.fakeNewsReport?.confidenceScore || 90}% Trust</span>
         </div>
 
         {/* Audio Quick Listen Pill */}

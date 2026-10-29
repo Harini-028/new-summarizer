@@ -6,6 +6,7 @@ import {
   Globe, Users, CheckSquare
 } from 'lucide-react';
 import { ActivePage } from '../types';
+import { useAuth } from '../context/AuthContext';
 
 interface SidebarProps {
   activePage: ActivePage;
@@ -14,6 +15,7 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ activePage, onNavigate, savedCount }: SidebarProps) {
+  const { user } = useAuth();
   const mainNavItems = [
     { id: 'landing' as ActivePage, label: 'Overview Landing', icon: Home },
     { id: 'home' as ActivePage, label: 'Live News Feed', icon: Newspaper },
@@ -50,7 +52,6 @@ export default function Sidebar({ activePage, onNavigate, savedCount }: SidebarP
     { id: 'ml-dashboard' as ActivePage, label: 'ML Service Pipeline', icon: Cpu, badge: 'FastAPI' },
     { id: 'system-health' as ActivePage, label: 'System Health', icon: Activity, badge: 'NEW' },
     { id: 'ai-models' as ActivePage, label: 'AI Models Info', icon: Brain, badge: 'NEW' },
-    { id: 'admin' as ActivePage, label: 'Admin Dashboard', icon: ShieldAlert },
     { id: 'profile' as ActivePage, label: 'Profile & Settings', icon: Settings },
   ];
 
@@ -128,6 +129,25 @@ export default function Sidebar({ activePage, onNavigate, savedCount }: SidebarP
           <p className="px-3 text-[10px] font-extrabold uppercase tracking-widest text-rose-400 mb-2">System & Analytics</p>
           <nav className="space-y-1">
             {adminAndML.map(renderNavItem)}
+            {user?.role === 'admin' && (
+              <a
+                href="/admin/dashboard"
+                onClick={(e) => {
+                  e.preventDefault();
+                  window.history.pushState({}, '', '/admin/dashboard');
+                  window.dispatchEvent(new PopStateEvent('popstate'));
+                }}
+                className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl text-xs font-bold text-indigo-400 hover:text-indigo-300 hover:bg-white/5 transition-all cursor-pointer"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <ShieldCheck className="w-4 h-4 shrink-0 text-indigo-400" />
+                  <span className="truncate">Admin Dashboard</span>
+                </div>
+                <span className="px-2 py-0.5 text-[9px] font-extrabold rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 uppercase tracking-wider">
+                  ADMIN
+                </span>
+              </a>
+            )}
           </nav>
         </div>
 

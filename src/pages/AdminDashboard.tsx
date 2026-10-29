@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { AdminSidebar, AdminSection } from '../components/admin/AdminSidebar';
 import { AdminTopNav } from '../components/admin/AdminTopNav';
-import { AdminOverviewView } from '../components/admin/AdminOverviewView';
+import { AdminOverviewView, NewsStats } from '../components/admin/AdminOverviewView';
 import { AdminArticlesView } from '../components/admin/AdminArticlesView';
+import { AdminNewsManagementView } from '../components/admin/AdminNewsManagementView';
+import { AdminAddNewsForm } from '../components/admin/AdminAddNewsForm';
 import { AdminAddEditArticleModal } from '../components/admin/AdminAddEditArticleModal';
 import { AdminArticleDetailModal } from '../components/admin/AdminArticleDetailModal';
 import { AdminFakeNewsView } from '../components/admin/AdminFakeNewsView';
@@ -17,18 +19,55 @@ import { AdminSystemHealthView } from '../components/admin/AdminSystemHealthView
 import { AdminAPIMonitoringView } from '../components/admin/AdminAPIMonitoringView';
 import { AdminLogsView } from '../components/admin/AdminLogsView';
 import { AdminSettingsView } from '../components/admin/AdminSettingsView';
+import { AdminCategoriesView } from '../components/admin/AdminCategoriesView';
+import { AdminAISummarizationView } from '../components/admin/AdminAISummarizationView';
+import { AdminAccountManagementView } from '../components/admin/AdminAccountManagementView';
 import { Article, UserProfile } from '../types';
 import { SAMPLE_ARTICLES, INITIAL_USER_PROFILE } from '../data/mockNewsData';
-import { Search, X, CheckCircle2, Command } from 'lucide-react';
+import { Search, X, CheckCircle2 } from 'lucide-react';
+import { useAdminAuth } from '../context/AdminAuthContext';
 
-export default function AdminDashboard() {
-  const [currentSection, setCurrentSection] = useState<AdminSection>('overview');
+interface AdminDashboardProps {
+  initialPath?: string;
+  onNavigate?: (path: string) => void;
+  onLogoutSuccess?: () => void;
+}
+
+export default function AdminDashboard({ initialPath, onNavigate, onLogoutSuccess }: AdminDashboardProps) {
+  const { adminUser, logout } = useAdminAuth();
+
+  // Resolve initial section from URL pathname
+  const resolveInitialState = () => {
+    const path = initialPath || window.location.pathname;
+    if (path === '/admin/news/add') {
+      return { section: 'add-article' as AdminSection, articleId: null, filter: 'all' as const };
+    }
+    if (path.startsWith('/admin/news/edit/')) {
+      const id = path.replace('/admin/news/edit/', '').trim();
+      return { section: 'add-article' as AdminSection, articleId: id, filter: 'all' as const };
+    }
+    if (path === '/admin/news') {
+      const searchParams = new URLSearchParams(window.location.search);
+      const statusParam = searchParams.get('status') || searchParams.get('type') || searchParams.get('filter');
+      const filter: 'all' | 'published' | 'draft' | 'breaking' | 'featured' = 
+        (statusParam === 'published' || statusParam === 'draft' || statusParam === 'breaking' || statusParam === 'featured')
+          ? statusParam
+          : 'all';
+      return { section: 'news-management' as AdminSection, articleId: null, filter };
+    }
+    return { section: 'overview' as AdminSection, articleId: null, filter: 'all' as const };
+  };
+
+  const initialResolved = resolveInitialState();
+  const [currentSection, setCurrentSection] = useState<AdminSection>(initialResolved.section);
+  const [managementFilter, setManagementFilter] = useState<'all' | 'published' | 'draft' | 'breaking' | 'featured'>(initialResolved.filter);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [articles, setArticles] = useState<Article[]>([...SAMPLE_ARTICLES]);
   const [users, setUsers] = useState<UserProfile[]>([{ ...INITIAL_USER_PROFILE, role: 'admin' }]);
+  const [stats, setStats] = useState<NewsStats | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
-  // Modals
+  // Modals & form state
   const [addEditModalOpen, setAddEditModalOpen] = useState(false);
   const [editingArticle, setEditingArticle] = useState<Article | null>(null);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
@@ -36,7 +75,20 @@ export default function AdminDashboard() {
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [globalQuery, setGlobalQuery] = useState('');
 
-  const token = localStorage.getItem('chronicle_token') || sessionStorage.getItem('chronicle_token');
+  const token = localStorage.getItem('chronicle_admin_token') || 
+                localStorage.getItem('chronicle_token') || 
+                sessionStorage.getItem('chronicle_admin_token') || 
+                sessionStorage.getItem('chronicle_token');
+
+  // Push browser URL changes cleanly
+  const syncBrowserUrl = (targetPath: string) => {
+    if (window.location.pathname !== targetPath) {
+      window.history.pushState({}, '', targetPath);
+    }
+    if (onNavigate) {
+      onNavigate(targetPath);
+    }
+  };
 
   // Keyboard shortcut Ctrl+K / Cmd+K for Global Search
   useEffect(() => {
@@ -50,82 +102,225 @@ export default function AdminDashboard() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Fetch articles and users from backend API
+  // Handle browser popstate navigation (Back/Forward)
   useEffect(() => {
-    fetch('/api/news?limit=150')
-      .then(r => r.json())
-      .then(d => {
-        if (Array.isArray(d)) setArticles(d);
-        else if (d.articles) setArticles(d.articles);
-      })
-      .catch(() => { /* use mock data fallback */ });
-
-    fetch('/api/admin/users', {
-      headers: token ? { Authorization: `Bearer ${token}` } : {}
-    })
-      .then(r => r.json())
-      .then(d => {
-        if (d.users) setUsers(d.users);
-      })
-      .catch(() => { /* silent fallback */ });
-  }, [token]);
+    const handlePopState = () => {
+      const state = resolveInitialState();
+      setCurrentSection(state.section);
+      setManagementFilter(state.filter);
+      if (state.articleId) {
+        loadArticleForEditing(state.articleId);
+      } else if (state.section === 'add-article') {
+        setEditingArticle(null);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [articles]);
 
   const showToast = (msg: string) => {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(null), 3500);
   };
 
-  // Article handlers
+  // Fetch live stats directly from MongoDB Atlas
+  const fetchAdminStats = () => {
+    fetch('/api/admin/news/stats', {
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d && typeof d.totalArticles === 'number') {
+          setStats(d);
+        }
+      })
+      .catch(() => {});
+  };
+
+  // Fetch all articles from MongoDB Atlas
+  const fetchAdminArticles = () => {
+    fetch('/api/admin/news', {
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    })
+      .then(r => {
+        if (r.status === 401 || r.status === 403) {
+          handleLogout();
+          throw new Error('Authentication required');
+        }
+        return r.json();
+      })
+      .then(d => {
+        if (Array.isArray(d)) setArticles(d);
+        else if (d.articles) setArticles(d.articles);
+        fetchAdminStats();
+      })
+      .catch(() => {
+        fetch('/api/news?limit=150')
+          .then(r => r.json())
+          .then(d => {
+            if (Array.isArray(d)) setArticles(d);
+            else if (d.articles) setArticles(d.articles);
+          })
+          .catch(() => {});
+      });
+  };
+
+  // Fetch initial data on mount
+  useEffect(() => {
+    fetchAdminArticles();
+    fetchAdminStats();
+
+    fetch('/api/admin/users', {
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d && d.users) setUsers(d.users);
+        else if (Array.isArray(d)) setUsers(d);
+      })
+      .catch(() => {});
+
+    // If initial route was an edit page, load that article
+    if (initialResolved.articleId) {
+      loadArticleForEditing(initialResolved.articleId);
+    }
+  }, [token]);
+
+  const loadArticleForEditing = (id: string) => {
+    // Check in existing state first
+    const existing = articles.find(a => a.id === id || (a as any)._id === id);
+    if (existing) {
+      setEditingArticle(existing);
+      setCurrentSection('add-article');
+      return;
+    }
+
+    // Fetch from API
+    fetch(`/api/admin/news/${id}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    })
+      .then(r => r.json())
+      .then(art => {
+        if (art && art.title) {
+          setEditingArticle(art);
+          setCurrentSection('add-article');
+        }
+      })
+      .catch(() => {
+        showToast('Failed to load article for editing.');
+      });
+  };
+
+  const handleSectionSelect = (sec: AdminSection) => {
+    if (sec === 'overview') {
+      setCurrentSection('overview');
+      syncBrowserUrl('/admin/dashboard');
+    } else if (sec === 'news-management') {
+      setManagementFilter('all');
+      setCurrentSection('news-management');
+      syncBrowserUrl('/admin/news');
+    } else if (sec === 'published-news') {
+      setManagementFilter('published');
+      setCurrentSection('news-management');
+      syncBrowserUrl('/admin/news?status=published');
+    } else if (sec === 'draft-news') {
+      setManagementFilter('draft');
+      setCurrentSection('news-management');
+      syncBrowserUrl('/admin/news?status=draft');
+    } else if (sec === 'breaking-news') {
+      setManagementFilter('breaking');
+      setCurrentSection('news-management');
+      syncBrowserUrl('/admin/news?type=breaking');
+    } else if (sec === 'featured-news') {
+      setManagementFilter('featured');
+      setCurrentSection('news-management');
+      syncBrowserUrl('/admin/news?type=featured');
+    } else if (sec === 'add-article') {
+      setEditingArticle(null);
+      setCurrentSection('add-article');
+      syncBrowserUrl('/admin/news/add');
+    } else {
+      setCurrentSection(sec);
+    }
+  };
+
+  const handlePublishNews = async (id: string) => {
+    try {
+      const res = await fetch(`/api/admin/news/${id}/publish`, {
+        method: 'PATCH',
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to publish news');
+      setArticles(prev => prev.map(a => a.id === id ? { ...a, status: 'published', publishedAt: new Date().toISOString() } : a));
+      fetchAdminStats();
+      showToast('News article published successfully to MongoDB Atlas.');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to publish news.');
+    }
+  };
+
+  const handleUnpublishNews = async (id: string) => {
+    try {
+      const res = await fetch(`/api/admin/news/${id}/unpublish`, {
+        method: 'PATCH',
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to unpublish news');
+      setArticles(prev => prev.map(a => a.id === id ? { ...a, status: 'draft' } : a));
+      fetchAdminStats();
+      showToast('News article moved to draft status.');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to unpublish news.');
+    }
+  };
+
+  const handleDeleteNews = async (id: string) => {
+    try {
+      const res = await fetch(`/api/admin/news/${id}`, {
+        method: 'DELETE',
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to delete news');
+      setArticles(prev => prev.filter(a => a.id !== id && (a as any)._id !== id));
+      fetchAdminStats();
+      showToast('News article permanently deleted from MongoDB Atlas.');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to delete news.');
+    }
+  };
+
+  const handleLogout = () => {
+    logout();
+    if (onLogoutSuccess) {
+      onLogoutSuccess();
+    } else {
+      window.history.pushState({}, '', '/admin/login');
+      window.location.href = '/admin/login';
+    }
+  };
+
+  const handleOpenEditArticle = (art: Article) => {
+    setEditingArticle(art);
+    setCurrentSection('add-article');
+    syncBrowserUrl(`/admin/news/edit/${art.id}`);
+  };
+
+  const handleOpenAddArticle = () => {
+    setEditingArticle(null);
+    setCurrentSection('add-article');
+    syncBrowserUrl('/admin/news/add');
+  };
+
+  // Article handlers for fallback modal
   const handleSaveArticle = (articleData: Partial<Article>) => {
     if (editingArticle) {
-      // Update existing
       setArticles(prev => prev.map(a => a.id === editingArticle.id ? { ...a, ...articleData } as Article : a));
       showToast(`Updated article "${articleData.title?.substring(0, 25)}..."`);
-    } else {
-      // Create new
-      const newArt: Article = {
-        id: `art_${Date.now()}`,
-        title: articleData.title || 'Untitled',
-        excerpt: articleData.excerpt || '',
-        content: articleData.content || '',
-        category: articleData.category || 'AI & Technology',
-        source: articleData.source || { name: 'Chronicle Editorial', domain: 'chronicle.ai', trustScore: 95 },
-        author: articleData.author || 'Admin',
-        publishedAt: new Date().toISOString(),
-        url: articleData.url || '',
-        imageUrl: articleData.imageUrl || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&q=80&w=800',
-        readTimeMinutes: articleData.readTimeMinutes || 3,
-        aiSummary: articleData.aiSummary || { bullets: [], executiveParagraph: '', keyTakeaway: '' },
-        sentiment: articleData.sentiment || { type: 'Positive', score: 0.8, label: 'Positive', tone: 'Analytical' },
-        fakeNewsReport: articleData.fakeNewsReport || { isLikelyFake: false, confidenceScore: 95, verdict: 'Verified Authentic', redFlags: [], factCheckSources: [] },
-        entities: articleData.entities || { organizations: [], people: [], locations: [], keywords: [] },
-        recommendationScore: 85,
-        likesCount: 0,
-        bookmarksCount: 0,
-        sharesCount: 0,
-        viewsCount: 1,
-        isTrending: !!articleData.isTrending,
-        isFeatured: !!articleData.isFeatured,
-        isBreaking: !!articleData.isBreaking
-      };
-      setArticles(prev => [newArt, ...prev]);
-      showToast(`Created new article "${newArt.title.substring(0, 25)}..."`);
     }
     setEditingArticle(null);
-  };
-
-  const handleDeleteArticle = (id: string) => {
-    setArticles(prev => prev.filter(a => a.id !== id));
-  };
-
-  const handleToggleTrending = (id: string) => {
-    setArticles(prev => prev.map(a => a.id === id ? { ...a, isTrending: !a.isTrending } : a));
-    showToast('Updated article trending status');
-  };
-
-  const handleToggleFeatured = (id: string) => {
-    setArticles(prev => prev.map(a => a.id === id ? { ...a, isFeatured: !a.isFeatured } : a));
-    showToast('Updated article featured status');
   };
 
   // Global search results
@@ -139,9 +334,13 @@ export default function AdminDashboard() {
 
   // Counts for sidebar badges
   const fakeNewsCount = articles.filter(a => a.fakeNewsReport?.isLikelyFake || a.fakeNewsReport?.verdict === 'High Misinformation Risk').length;
+  const publishedArticlesCount = stats?.publishedArticles ?? articles.filter(a => ((a as any).status || 'published') === 'published').length;
+  const draftArticlesCount = stats?.draftArticles ?? articles.filter(a => (a as any).status === 'draft').length;
+  const breakingArticlesCount = stats?.breakingNews ?? articles.filter(a => a.isBreaking).length;
+  const featuredArticlesCount = stats?.featuredArticles ?? articles.filter(a => a.isFeatured).length;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-indigo-600 selection:text-white">
       {/* Toast Notification */}
       {toastMsg && (
         <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-2xl bg-indigo-600 text-white text-xs font-bold shadow-2xl border border-indigo-400/40 animate-bounce">
@@ -155,28 +354,34 @@ export default function AdminDashboard() {
         {/* Sidebar */}
         <AdminSidebar
           currentSection={currentSection}
-          onSelectSection={(sec) => {
-            if (sec === 'add-article') {
-              setEditingArticle(null);
-              setAddEditModalOpen(true);
-            } else {
-              setCurrentSection(sec);
-            }
-          }}
+          onSelectSection={handleSectionSelect}
           isOpenMobile={mobileSidebarOpen}
           onCloseMobile={() => setMobileSidebarOpen(false)}
+          onLogout={handleLogout}
+          onBackToWebsite={() => {
+            if (onNavigate) {
+              onNavigate('/');
+            } else {
+              window.history.pushState({}, '', '/');
+              window.dispatchEvent(new PopStateEvent('popstate'));
+            }
+          }}
           counts={{
-            articles: articles.length,
+            articles: stats?.totalArticles ?? articles.length,
+            published: publishedArticlesCount,
+            drafts: draftArticlesCount,
+            breaking: breakingArticlesCount,
+            featured: featuredArticlesCount,
             fakeNewsCount,
             users: users.length,
-            sources: 5
+            sources: 6
           }}
         />
 
         {/* Main Content Area */}
         <div className="flex-1 flex flex-col min-w-0">
           <AdminTopNav
-            user={users[0] || null}
+            user={adminUser ? { ...INITIAL_USER_PROFILE, name: adminUser.name, email: adminUser.email, role: 'admin' } : (users[0] || null)}
             onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
             onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
             onToast={showToast}
@@ -187,20 +392,66 @@ export default function AdminDashboard() {
               <AdminOverviewView
                 articles={articles}
                 users={users}
-                onNavigateSection={setCurrentSection}
+                stats={stats}
+                onNavigateSection={handleSectionSelect}
+                onRefresh={() => { fetchAdminArticles(); fetchAdminStats(); showToast('Synchronized with MongoDB Atlas.'); }}
                 onToast={showToast}
               />
             )}
 
-            {(currentSection === 'all-articles' || currentSection === 'categories' || currentSection === 'featured-news') && (
+            {currentSection === 'news-management' && (
+              <AdminNewsManagementView
+                articles={articles}
+                initialFilter={managementFilter}
+                onOpenAddNews={handleOpenAddArticle}
+                onOpenEditNews={handleOpenEditArticle}
+                onOpenViewNews={(art) => {
+                  setInspectingArticle(art);
+                  setDetailModalOpen(true);
+                }}
+                onDeleteNews={handleDeleteNews}
+                onPublishNews={handlePublishNews}
+                onUnpublishNews={handleUnpublishNews}
+                onRefresh={() => { fetchAdminArticles(); fetchAdminStats(); showToast('Refreshed news from MongoDB Atlas.'); }}
+                onToast={showToast}
+              />
+            )}
+
+            {currentSection === 'add-article' && (
+              <AdminAddNewsForm
+                articleToEdit={editingArticle}
+                onSuccess={(savedArt, msg) => {
+                  setArticles(prev => {
+                    const exists = prev.some(a => a.id === savedArt.id || (a as any)._id === savedArt.id);
+                    if (exists) {
+                      return prev.map(a => (a.id === savedArt.id || (a as any)._id === savedArt.id) ? savedArt : a);
+                    }
+                    return [savedArt, ...prev];
+                  });
+                  setEditingArticle(null);
+                  setCurrentSection('news-management');
+                  syncBrowserUrl('/admin/news');
+                  fetchAdminStats();
+                  showToast(msg);
+                }}
+                onCancel={() => {
+                  setEditingArticle(null);
+                  setCurrentSection('news-management');
+                  syncBrowserUrl('/admin/news');
+                }}
+                onToast={showToast}
+              />
+            )}
+
+            {currentSection === 'all-articles' && (
               <AdminArticlesView
                 articles={articles}
-                onOpenAddModal={() => { setEditingArticle(null); setAddEditModalOpen(true); }}
-                onOpenEditModal={(art) => { setEditingArticle(art); setAddEditModalOpen(true); }}
+                onOpenAddModal={handleOpenAddArticle}
+                onOpenEditModal={handleOpenEditArticle}
                 onOpenDetailModal={(art) => { setInspectingArticle(art); setDetailModalOpen(true); }}
-                onDeleteArticle={handleDeleteArticle}
-                onToggleTrending={handleToggleTrending}
-                onToggleFeatured={handleToggleFeatured}
+                onDeleteArticle={handleDeleteNews}
+                onToggleTrending={() => {}}
+                onToggleFeatured={() => {}}
                 onToast={showToast}
               />
             )}
@@ -209,11 +460,31 @@ export default function AdminDashboard() {
               <AdminFakeNewsView
                 articles={articles}
                 onOpenDetailModal={(art) => { setInspectingArticle(art); setDetailModalOpen(true); }}
+                onArticleUpdated={(updated) => setArticles(prev => prev.map(a => a.id === updated.id ? updated : a))}
                 onToast={showToast}
               />
             )}
 
-            {(currentSection === 'ml-performance' || currentSection === 'ai-summarization' || currentSection === 'sentiment-analysis' || currentSection === 'news-classification' || currentSection === 'recommendations') && (
+            {currentSection === 'categories' && (
+              <AdminCategoriesView
+                onSelectCategory={(cat) => {
+                  setManagementFilter('all');
+                  setCurrentSection('news-management');
+                  syncBrowserUrl('/admin/news');
+                }}
+                onToast={showToast}
+              />
+            )}
+
+            {currentSection === 'ai-summarization' && (
+              <AdminAISummarizationView
+                articles={articles}
+                onArticleUpdated={(updated) => setArticles(prev => prev.map(a => a.id === updated.id ? updated : a))}
+                onToast={showToast}
+              />
+            )}
+
+            {(currentSection === 'ml-performance' || currentSection === 'sentiment-analysis' || currentSection === 'news-classification' || currentSection === 'recommendations') && (
               <AdminMLPerformanceView />
             )}
 
@@ -223,6 +494,10 @@ export default function AdminDashboard() {
 
             {currentSection === 'news-sources' && (
               <AdminNewsSourcesView onToast={showToast} />
+            )}
+
+            {currentSection === 'admin-accounts' && (
+              <AdminAccountManagementView onToast={showToast} />
             )}
 
             {(currentSection === 'users' || currentSection === 'user-activity' || currentSection === 'interest-profiles' || currentSection === 'reading-history' || currentSection === 'feedback') && (
@@ -236,7 +511,7 @@ export default function AdminDashboard() {
             {currentSection === 'trending-news' && (
               <AdminTrendingView
                 articles={articles}
-                onToggleTrending={handleToggleTrending}
+                onToggleTrending={() => {}}
                 onToast={showToast}
               />
             )}
@@ -264,7 +539,7 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      {/* Add / Edit Article Modal */}
+      {/* Add / Edit Article Fallback Modal */}
       <AdminAddEditArticleModal
         isOpen={addEditModalOpen}
         onClose={() => setAddEditModalOpen(false)}
@@ -291,9 +566,9 @@ export default function AdminDashboard() {
                 value={globalQuery}
                 onChange={e => setGlobalQuery(e.target.value)}
                 placeholder="Global admin search across articles, users, logs..."
-                className="w-full bg-transparent text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none"
+                className="w-full bg-transparent text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none font-mono"
               />
-              <button onClick={() => setGlobalSearchOpen(false)} className="text-slate-500 hover:text-slate-300">
+              <button onClick={() => setGlobalSearchOpen(false)} className="text-slate-500 hover:text-slate-300 cursor-pointer">
                 <X className="w-4 h-4" />
               </button>
             </div>

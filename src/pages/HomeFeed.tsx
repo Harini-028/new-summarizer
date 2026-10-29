@@ -1,11 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Grid, List, SlidersHorizontal, Sparkles, TrendingUp, RefreshCw, Flame,
   ShieldCheck, ShieldAlert, BadgeAlert, Brain, FileText, Compass, Eye,
-  Radio, BarChart3, Search, Target, ArrowRight, Zap, CheckCircle2
+  Radio, BarChart3, Search, Target, ArrowRight, Zap, CheckCircle2, Star
 } from 'lucide-react';
 import { Article, CategoryType } from '../types';
 import NewsCard from '../components/NewsCard';
+import { ALL_DISPLAY_CATEGORIES, getCategoryStyle, DEFAULT_FALLBACK_IMAGE } from '../data/categories';
 
 interface HomeFeedProps {
   articles: Article[];
@@ -34,17 +35,52 @@ export default function HomeFeed({
 }: HomeFeedProps) {
   const [layoutMode, setLayoutMode] = useState<'grid' | 'list' | 'compact'>('grid');
   const [sortBy, setSortBy] = useState<'newest' | 'popular' | 'recommended'>('newest');
+  const [recentNewsArticles, setRecentNewsArticles] = useState<Article[]>([]);
+  const [loadingRecent, setLoadingRecent] = useState<boolean>(false);
 
-  const categories: CategoryType[] = [
-    'All',
-    'AI & Technology',
-    'Business & Finance',
-    'Science & Space',
-    'Health & Medicine',
-    'World & Politics',
-    'Climate & Environment',
-    'Entertainment & Culture'
-  ];
+  const fetchRecentNews = async () => {
+    setLoadingRecent(true);
+    try {
+      const res = await fetch('/api/news/recent?limit=12');
+      const data = await res.json();
+      if (data && data.articles) {
+        setRecentNewsArticles(data.articles);
+      } else if (Array.isArray(data)) {
+        setRecentNewsArticles(data);
+      }
+    } catch (err) {
+      console.warn('Failed to fetch recent news:', err);
+    } finally {
+      setLoadingRecent(false);
+    }
+  };
+
+  useEffect(() => {
+    void fetchRecentNews();
+  }, []);
+
+  useEffect(() => {
+    if (articles.length > 0) {
+      void fetchRecentNews();
+    }
+  }, [articles]);
+
+  const formatRecentTime = (dateStr: string) => {
+    try {
+      const diffMs = Date.now() - new Date(dateStr).getTime();
+      const diffMins = Math.floor(diffMs / (1000 * 60));
+      if (diffMins < 1) return 'Just now';
+      if (diffMins < 60) return `${diffMins}m ago`;
+      const diffHours = Math.floor(diffMins / 60);
+      if (diffHours < 24) return `${diffHours}h ago`;
+      const diffDays = Math.floor(diffHours / 24);
+      return `${diffDays}d ago`;
+    } catch {
+      return 'Recently';
+    }
+  };
+
+  const categories = ALL_DISPLAY_CATEGORIES;
 
   // Stats calculation
   const totalArticles = articles.length;
@@ -212,6 +248,120 @@ export default function HomeFeed({
           </div>
 
         </div>
+      </div>
+
+      {/* 📰 RECENT NEWS SECTION (Live from MongoDB Atlas via /api/news/recent) */}
+      <div className="space-y-4 pt-2">
+        <div className="flex items-center justify-between pb-1 border-b border-slate-800/80">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center text-white shadow-lg shadow-indigo-950/50">
+              <Zap className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="text-sm font-extrabold text-white tracking-wide uppercase font-mono flex items-center gap-2">
+                RECENT NEWS
+                <span className="flex h-2 w-2 relative">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </span>
+              </h2>
+              <p className="text-[10px] text-slate-400">Chronicle AI live published articles stored permanently in MongoDB Atlas</p>
+            </div>
+          </div>
+
+          <button
+            onClick={() => void fetchRecentNews()}
+            className="text-xs font-mono font-bold text-indigo-400 hover:text-indigo-300 flex items-center gap-1.5 transition-colors cursor-pointer"
+            title="Refresh recent news"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loadingRecent ? 'animate-spin' : ''}`} />
+            <span>Live Sync</span>
+          </button>
+        </div>
+
+        {loadingRecent && recentNewsArticles.length === 0 ? (
+          <div className="p-8 rounded-3xl bg-slate-900/60 border border-slate-800 text-center text-slate-400 text-xs flex items-center justify-center gap-2">
+            <RefreshCw className="w-4 h-4 animate-spin text-indigo-400" />
+            <span>Fetching real-time news from MongoDB Atlas...</span>
+          </div>
+        ) : recentNewsArticles.length === 0 ? (
+          <div className="p-8 rounded-3xl bg-slate-900/60 border border-slate-800 text-center text-slate-500 text-xs">
+            No published news found in MongoDB. Use Admin News Management to publish articles.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+            {recentNewsArticles.slice(0, 6).map((art) => {
+              const catStyle = getCategoryStyle(art.category);
+              return (
+                <div
+                  key={art.id}
+                  onClick={() => onOpenSummary(art)}
+                  className="group bg-slate-900/90 border border-slate-800 hover:border-indigo-500/50 rounded-3xl overflow-hidden transition-all duration-300 hover:shadow-2xl hover:shadow-indigo-950/40 flex flex-col cursor-pointer"
+                >
+                  {/* Thumbnail & Badges */}
+                  <div className="relative h-44 w-full overflow-hidden bg-slate-950">
+                    <img
+                      src={art.imageUrl || DEFAULT_FALLBACK_IMAGE}
+                      alt={art.title}
+                      onError={(e) => { (e.currentTarget as HTMLImageElement).src = DEFAULT_FALLBACK_IMAGE; }}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-transparent to-transparent" />
+
+                    <div className="absolute top-3 left-3 flex items-center gap-2 flex-wrap">
+                      {art.isBreaking && (
+                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-rose-600 text-white flex items-center gap-1 animate-pulse border border-rose-400">
+                          <Flame className="w-3 h-3 fill-amber-300 text-amber-300" />
+                          BREAKING
+                        </span>
+                      )}
+
+                      {art.isFeatured && (
+                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-purple-600 text-white flex items-center gap-1 border border-purple-400">
+                          <Star className="w-3 h-3 fill-amber-300 text-amber-300" />
+                          FEATURED
+                        </span>
+                      )}
+
+                      <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${catStyle.badgeColor} ${catStyle.textColor} ${catStyle.borderColor}`}>
+                        {art.category}
+                      </span>
+                    </div>
+
+                    <div className="absolute bottom-2.5 right-3 text-[10px] font-mono text-slate-300 bg-black/60 px-2 py-0.5 rounded-md backdrop-blur-sm">
+                      {formatRecentTime(art.publishedAt)}
+                    </div>
+                  </div>
+
+                  {/* Card Content */}
+                  <div className="p-4 flex-1 flex flex-col justify-between space-y-3">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px] text-slate-400">
+                        <span className="font-bold text-slate-300 truncate max-w-[150px]">
+                          {art.source?.name || 'Chronicle Wire'}
+                        </span>
+                        <span>By {art.author || 'Editorial'}</span>
+                      </div>
+
+                      <h3 className="text-sm font-bold text-white group-hover:text-indigo-300 transition-colors line-clamp-2 leading-snug">
+                        {art.title}
+                      </h3>
+
+                      <p className="text-xs text-slate-400 line-clamp-2 leading-relaxed">
+                        {art.description || art.excerpt || art.aiSummary?.keyTakeaway || ''}
+                      </p>
+                    </div>
+
+                    <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs font-bold text-indigo-400 group-hover:text-indigo-300">
+                      <span>Read Full AI Story</span>
+                      <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Category Pills Bar & Controls */}

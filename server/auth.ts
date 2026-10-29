@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import mongoose from 'mongoose';
 import { User, isMongoConnected, IUser } from './db';
 import { INITIAL_USER_PROFILE } from '../src/data/mockNewsData';
 
@@ -10,25 +11,27 @@ const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'chr_refresh_secret
 // In-Memory store fallback
 export const memoryUserStore = new Map<string, any>(); // email -> user info
 
-// Pre-seed admin user in memory fallback
-const seedEmail = 'demo@chronicle.ai';
-const adminEmail = 'admin@chronicle.ai';
-const adminUserObj = {
-  id: 'usr_demo_001',
-  name: 'Demo Admin',
-  email: seedEmail,
-  passwordHash: bcrypt.hashSync('demo1234', 10),
-  avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=200',
-  role: 'admin',
-  plan: 'Enterprise SaaS',
-  interests: ['AI & Technology', 'Science & Space'],
-  readingStats: { ...INITIAL_USER_PROFILE.readingStats },
-  preferences: { ...INITIAL_USER_PROFILE.preferences },
-  isVerified: true,
-  createdAt: new Date()
-};
-memoryUserStore.set(seedEmail, adminUserObj);
-memoryUserStore.set(adminEmail, { ...adminUserObj, id: 'usr_admin_001', email: adminEmail, passwordHash: bcrypt.hashSync('adminpassword', 10) });
+// Optional pre-seed admin user in memory fallback if explicitly defined in environment
+if (process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD) {
+  const adminEmail = process.env.ADMIN_EMAIL.toLowerCase().trim();
+  const defaultAdminPassword = process.env.ADMIN_PASSWORD;
+  const adminName = process.env.ADMIN_NAME || 'Chronicle Administrator';
+  const adminUserObj = {
+    id: 'usr_admin_001',
+    name: adminName,
+    email: adminEmail,
+    passwordHash: bcrypt.hashSync(defaultAdminPassword, 10),
+    avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=200',
+    role: 'admin' as const,
+    plan: 'Enterprise SaaS' as const,
+    interests: ['AI & Technology', 'Science & Space'],
+    readingStats: { ...INITIAL_USER_PROFILE.readingStats },
+    preferences: { ...INITIAL_USER_PROFILE.preferences },
+    isVerified: true,
+    createdAt: new Date()
+  };
+  memoryUserStore.set(adminEmail, adminUserObj);
+}
 
 export interface AuthRequest extends Request {
   user?: {
@@ -78,10 +81,565 @@ export function authorizeRoles(...allowedRoles: string[]) {
       res.status(403).json({ error: `Access denied. Requires one of roles: [${allowedRoles.join(', ')}]` });
       return;
     }
-    next;
+    next();
   };
 }
 
+// Strict Database-Verified Admin Role Middleware
+export async function requireAdmin(req: AuthRequest, res: Response, next: NextFunction) {
+  if (!req.user || !req.user.id) {
+    res.status(401).json({ error: 'Access token required. Please sign in as an administrator.' });
+    return;
+  }
+
+  try {
+    let actualRole: string | undefined;
+
+    if (isMongoConnected()) {
+      let dbUser: any = null;
+      if (mongoose.Types.ObjectId.isValid(req.user.id)) {
+        dbUser = await User.findById(req.user.id).select('role email').lean();
+      }
+      if (!dbUser && req.user.email) {
+        dbUser = await User.findOne({ email: req.user.email.toLowerCase() }).select('role email').lean();
+      }
+      if (!dbUser) {
+        res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+        return;
+      }
+      actualRole = dbUser.role;
+    } else {
+      const memUser = memoryUserStore.get(req.user.email?.toLowerCase());
+      actualRole = memUser?.role;
+    }
+
+    if (actualRole !== 'admin') {
+      res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+      return;
+    }
+
+    // Role verified from trusted database record
+    req.user.role = 'admin';
+    next();
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to verify admin authorization: ' + err.message });
+  }
+}
+
+// Ensure Initial Administrator Account in MongoDB Atlas or Memory Store
+export async function ensureInitialAdminUser() {
+  const envAdminEmail = process.env.ADMIN_EMAIL ? process.env.ADMIN_EMAIL.toLowerCase().trim() : null;
+  const envAdminPassword = process.env.ADMIN_PASSWORD;
+  const envAdminName = process.env.ADMIN_NAME || 'Chronicle Administrator';
+
+  if (!envAdminEmail || !envAdminPassword) {
+    if (isMongoConnected()) {
+      try {
+        const existingAdmins = await User.countDocuments({ role: 'admin' });
+        if (existingAdmins > 0) {
+          console.log(`[Admin Security] Verified ${existingAdmins} administrator account(s) active in MongoDB Atlas.`);
+        } else {
+          console.log('[Admin Security] No administrator account found in MongoDB Atlas. Initial administrator setup available at /admin/register.');
+        }
+      } catch (e: any) {
+        console.error('[Admin Security] Error checking admin status:', e.message);
+      }
+    } else {
+      let count = 0;
+      for (const u of memoryUserStore.values()) {
+        if (u.role === 'admin') count++;
+      }
+      if (count > 0) {
+        console.log(`[Admin Security] Verified ${count} administrator account(s) active in memory store.`);
+      } else {
+        console.log('[Admin Security] Initial administrator setup available at /admin/register.');
+      }
+    }
+    return;
+  }
+
+  const passwordHash = await bcrypt.hash(envAdminPassword, 10);
+  const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(envAdminName)}&background=6366f1&color=fff&size=200`;
+
+  // Keep in-memory store updated
+  const adminMemUser = {
+    id: 'usr_admin_001',
+    name: envAdminName,
+    email: envAdminEmail,
+    passwordHash,
+    avatarUrl,
+    role: 'admin' as const,
+    plan: 'Enterprise SaaS' as const,
+    interests: ['AI & Technology', 'Science & Space'],
+    readingStats: { ...INITIAL_USER_PROFILE.readingStats },
+    preferences: { ...INITIAL_USER_PROFILE.preferences },
+    isVerified: true,
+    createdAt: new Date()
+  };
+  memoryUserStore.set(envAdminEmail, adminMemUser);
+
+  if (isMongoConnected()) {
+    try {
+      let existingUser = await User.findOne({ email: envAdminEmail });
+      if (!existingUser) {
+        existingUser = new User({
+          name: envAdminName,
+          email: envAdminEmail,
+          passwordHash,
+          avatarUrl,
+          role: 'admin',
+          plan: 'Enterprise SaaS',
+          isVerified: true
+        });
+        await existingUser.save();
+        console.log(`[Admin Security] Secure Initial Administrator account created in MongoDB Atlas: ${envAdminEmail}`);
+      } else if (existingUser.role !== 'admin') {
+        existingUser.role = 'admin';
+        existingUser.passwordHash = passwordHash;
+        await existingUser.save();
+        console.log(`[Admin Security] Existing account promoted to Administrator in MongoDB Atlas: ${envAdminEmail}`);
+      } else {
+        console.log(`[Admin Security] Administrator account verified in MongoDB Atlas: ${envAdminEmail}`);
+      }
+    } catch (e: any) {
+      console.error('[Admin Security] Error checking initial admin in MongoDB:', e.message);
+    }
+  }
+}
+
+// Dedicated Admin Login Handler
+export async function handleAdminLogin(req: Request, res: Response) {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    res.status(400).json({ error: 'Admin email and password are required.' });
+    return;
+  }
+
+  const normalizedEmail = email.toLowerCase().trim();
+
+  if (isMongoConnected()) {
+    try {
+      const user = await User.findOne({ email: normalizedEmail });
+      if (!user) {
+        res.status(401).json({ error: 'Invalid administrator email or password.' });
+        return;
+      }
+
+      const isMatch = await bcrypt.compare(password, user.passwordHash);
+      if (!isMatch) {
+        res.status(401).json({ error: 'Invalid administrator email or password.' });
+        return;
+      }
+
+      // Check user's actual admin role from trusted database record
+      if (user.role !== 'admin') {
+        res.status(403).json({ error: 'Access denied. You do not have administrator privileges.' });
+        return;
+      }
+
+      const tokenUser = { id: user._id.toString(), email: user.email, role: 'admin' };
+      const accessToken = generateAccessToken(tokenUser);
+      const refreshToken = generateRefreshToken(tokenUser);
+      user.refreshToken = refreshToken;
+      await user.save();
+
+      res.json({
+        success: true,
+        token: accessToken,
+        refreshToken,
+        user: {
+          id: user._id.toString(),
+          name: user.name,
+          email: user.email,
+          avatarUrl: user.avatarUrl,
+          role: 'admin',
+          plan: user.plan
+        }
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || 'Database error during admin login.' });
+    }
+  } else {
+    // Memory store fallback
+    const user = memoryUserStore.get(normalizedEmail);
+    if (!user) {
+      res.status(401).json({ error: 'Invalid administrator email or password.' });
+      return;
+    }
+
+    const isMatch = await bcrypt.compare(password, user.passwordHash);
+    if (!isMatch) {
+      res.status(401).json({ error: 'Invalid administrator email or password.' });
+      return;
+    }
+
+    if (user.role !== 'admin') {
+      res.status(403).json({ error: 'Access denied. You do not have administrator privileges.' });
+      return;
+    }
+
+    const tokenUser = { id: user.id, email: normalizedEmail, role: 'admin' };
+    const accessToken = generateAccessToken(tokenUser);
+    const refreshToken = generateRefreshToken(tokenUser);
+
+    res.json({
+      success: true,
+      token: accessToken,
+      refreshToken,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        avatarUrl: user.avatarUrl,
+        role: 'admin',
+        plan: user.plan
+      }
+    });
+  }
+}
+
+// Dedicated Admin Profile / Session Check Handler
+export async function handleAdminMe(req: AuthRequest, res: Response) {
+  if (!req.user) {
+    res.status(401).json({ error: 'Authentication required.' });
+    return;
+  }
+
+  try {
+    if (isMongoConnected()) {
+      let dbUser: any = null;
+      if (mongoose.Types.ObjectId.isValid(req.user.id)) {
+        dbUser = await User.findById(req.user.id);
+      }
+      if (!dbUser && req.user.email) {
+        dbUser = await User.findOne({ email: req.user.email.toLowerCase() });
+      }
+      if (!dbUser || dbUser.role !== 'admin') {
+        res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+        return;
+      }
+      res.json({
+        id: dbUser._id.toString(),
+        name: dbUser.name,
+        email: dbUser.email,
+        avatarUrl: dbUser.avatarUrl,
+        role: 'admin',
+        plan: dbUser.plan
+      });
+    } else {
+      const memUser = memoryUserStore.get(req.user.email?.toLowerCase());
+      if (!memUser || memUser.role !== 'admin') {
+        res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+        return;
+      }
+      res.json({
+        id: memUser.id,
+        name: memUser.name,
+        email: memUser.email,
+        avatarUrl: memUser.avatarUrl,
+        role: 'admin',
+        plan: memUser.plan
+      });
+    }
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+}
+
+
+// Check if Initial Admin Setup is available or restricted
+export async function handleAdminSetupStatus(req: Request, res: Response) {
+  try {
+    let adminExists = false;
+    if (isMongoConnected()) {
+      const existing = await User.findOne({ role: 'admin' });
+      adminExists = !!existing;
+    } else {
+      for (const u of memoryUserStore.values()) {
+        if (u.role === 'admin') {
+          adminExists = true;
+          break;
+        }
+      }
+    }
+
+    if (adminExists) {
+      res.json({
+        setupAvailable: false,
+        message: 'Administrator registration is restricted. Please contact the system administrator.',
+        requiresToken: false
+      });
+    } else {
+      res.json({
+        setupAvailable: true,
+        message: 'Initial administrator setup is available.',
+        requiresToken: !!process.env.ADMIN_SETUP_TOKEN
+      });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// Secure First Administrator Setup (Only available when 0 administrators exist)
+export async function handleFirstAdminSetup(req: Request, res: Response) {
+  try {
+    const { name, email, password, confirmPassword, setupToken } = req.body;
+
+    let adminExists = false;
+    if (isMongoConnected()) {
+      const existing = await User.findOne({ role: 'admin' });
+      adminExists = !!existing;
+    } else {
+      for (const u of memoryUserStore.values()) {
+        if (u.role === 'admin') {
+          adminExists = true;
+          break;
+        }
+      }
+    }
+
+    if (adminExists) {
+      res.status(403).json({
+        error: 'Administrator registration is restricted. Please contact the system administrator.'
+      });
+      return;
+    }
+
+    // Verify setup token if configured in environment
+    if (process.env.ADMIN_SETUP_TOKEN) {
+      if (!setupToken || setupToken !== process.env.ADMIN_SETUP_TOKEN) {
+        res.status(403).json({ error: 'Invalid or missing administrator setup authorization token.' });
+        return;
+      }
+    }
+
+    if (!name || typeof name !== 'string' || name.trim().length < 2) {
+      res.status(400).json({ error: 'Admin name is required (at least 2 characters).' });
+      return;
+    }
+
+    if (!email || typeof email !== 'string' || !email.includes('@')) {
+      res.status(400).json({ error: 'A valid email address is required.' });
+      return;
+    }
+
+    if (!password || typeof password !== 'string' || password.length < 8) {
+      res.status(400).json({ error: 'Administrator password must be at least 8 characters long.' });
+      return;
+    }
+
+    if (confirmPassword && password !== confirmPassword) {
+      res.status(400).json({ error: 'Passwords do not match.' });
+      return;
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const passwordHash = await bcrypt.hash(password, 10);
+    const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=6366f1&color=fff&size=200`;
+
+    if (isMongoConnected()) {
+      let user = await User.findOne({ email: normalizedEmail });
+      if (user) {
+        user.name = name.trim();
+        user.passwordHash = passwordHash;
+        user.role = 'admin';
+        user.isVerified = true;
+        user.plan = 'Enterprise SaaS';
+        await user.save();
+      } else {
+        user = new User({
+          name: name.trim(),
+          email: normalizedEmail,
+          passwordHash,
+          avatarUrl,
+          role: 'admin',
+          plan: 'Enterprise SaaS',
+          isVerified: true
+        });
+        await user.save();
+      }
+
+      const tokenUser = { id: user._id.toString(), email: user.email, role: 'admin' };
+      const accessToken = generateAccessToken(tokenUser);
+      const refreshToken = generateRefreshToken(tokenUser);
+      user.refreshToken = refreshToken;
+      await user.save();
+
+      res.status(201).json({
+        success: true,
+        message: 'Initial administrator account created successfully.',
+        token: accessToken,
+        refreshToken,
+        user: {
+          id: user._id.toString(),
+          name: user.name,
+          email: user.email,
+          avatarUrl: user.avatarUrl,
+          role: 'admin',
+          plan: user.plan
+        }
+      });
+    } else {
+      const id = 'usr_admin_' + Date.now();
+      const adminUser = {
+        id,
+        name: name.trim(),
+        email: normalizedEmail,
+        passwordHash,
+        avatarUrl,
+        role: 'admin' as const,
+        plan: 'Enterprise SaaS' as const,
+        interests: ['AI & Technology', 'Science & Space'],
+        readingStats: { ...INITIAL_USER_PROFILE.readingStats },
+        preferences: { ...INITIAL_USER_PROFILE.preferences },
+        isVerified: true,
+        createdAt: new Date()
+      };
+      memoryUserStore.set(normalizedEmail, adminUser);
+
+      const tokenUser = { id, email: normalizedEmail, role: 'admin' };
+      const accessToken = generateAccessToken(tokenUser);
+      const refreshToken = generateRefreshToken(tokenUser);
+
+      res.status(201).json({
+        success: true,
+        message: 'Initial administrator account created successfully.',
+        token: accessToken,
+        refreshToken,
+        user: {
+          id,
+          name: adminUser.name,
+          email: adminUser.email,
+          avatarUrl: adminUser.avatarUrl,
+          role: 'admin',
+          plan: adminUser.plan
+        }
+      });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to create initial administrator: ' + err.message });
+  }
+}
+
+// Authenticated Administrator-Only: Provision Another Administrator Account
+export async function handleCreateAdminByAdmin(req: AuthRequest, res: Response) {
+  try {
+    const { name, email, password, confirmPassword } = req.body;
+
+    if (!name || typeof name !== 'string' || name.trim().length < 2) {
+      res.status(400).json({ error: 'Admin name is required.' });
+      return;
+    }
+    if (!email || typeof email !== 'string' || !email.includes('@')) {
+      res.status(400).json({ error: 'A valid email address is required.' });
+      return;
+    }
+    if (!password || typeof password !== 'string' || password.length < 8) {
+      res.status(400).json({ error: 'Password must be at least 8 characters long.' });
+      return;
+    }
+    if (confirmPassword && password !== confirmPassword) {
+      res.status(400).json({ error: 'Passwords do not match.' });
+      return;
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const passwordHash = await bcrypt.hash(password, 10);
+    const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=6366f1&color=fff&size=200`;
+
+    if (isMongoConnected()) {
+      const existing = await User.findOne({ email: normalizedEmail });
+      if (existing) {
+        if (existing.role === 'admin') {
+          res.status(409).json({ error: 'An administrator with this email already exists.' });
+          return;
+        }
+        existing.role = 'admin';
+        existing.name = name.trim();
+        existing.passwordHash = passwordHash;
+        existing.isVerified = true;
+        await existing.save();
+
+        res.status(200).json({
+          success: true,
+          message: `User ${normalizedEmail} successfully promoted to Administrator.`,
+          user: {
+            id: existing._id.toString(),
+            name: existing.name,
+            email: existing.email,
+            avatarUrl: existing.avatarUrl,
+            role: 'admin',
+            plan: existing.plan
+          }
+        });
+        return;
+      }
+
+      const newAdmin = new User({
+        name: name.trim(),
+        email: normalizedEmail,
+        passwordHash,
+        avatarUrl,
+        role: 'admin',
+        plan: 'Enterprise SaaS',
+        isVerified: true
+      });
+      await newAdmin.save();
+
+      res.status(201).json({
+        success: true,
+        message: 'New Administrator account created successfully.',
+        user: {
+          id: newAdmin._id.toString(),
+          name: newAdmin.name,
+          email: newAdmin.email,
+          avatarUrl: newAdmin.avatarUrl,
+          role: 'admin',
+          plan: newAdmin.plan
+        }
+      });
+    } else {
+      const existing = memoryUserStore.get(normalizedEmail);
+      if (existing && existing.role === 'admin') {
+        res.status(409).json({ error: 'An administrator with this email already exists.' });
+        return;
+      }
+
+      const id = 'usr_admin_' + Date.now();
+      const adminUser = {
+        id,
+        name: name.trim(),
+        email: normalizedEmail,
+        passwordHash,
+        avatarUrl,
+        role: 'admin' as const,
+        plan: 'Enterprise SaaS' as const,
+        interests: ['AI & Technology'],
+        readingStats: { ...INITIAL_USER_PROFILE.readingStats },
+        preferences: { ...INITIAL_USER_PROFILE.preferences },
+        isVerified: true,
+        createdAt: new Date()
+      };
+      memoryUserStore.set(normalizedEmail, adminUser);
+
+      res.status(201).json({
+        success: true,
+        message: 'New Administrator account created successfully.',
+        user: {
+          id,
+          name: adminUser.name,
+          email: adminUser.email,
+          avatarUrl: adminUser.avatarUrl,
+          role: 'admin',
+          plan: adminUser.plan
+        }
+      });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to create administrator: ' + err.message });
+  }
+}
 
 // --- Route Handlers ---
 
@@ -108,17 +666,19 @@ export async function handleRegister(req: Request, res: Response) {
         email: normalizedEmail,
         passwordHash,
         avatarUrl,
+        role: 'user',
+        plan: 'Free Tier',
         isVerified: false,
         verificationToken: Math.random().toString(36).substring(2, 10).toUpperCase()
       });
       await user.save();
-      const tokenUser = { id: user._id.toString(), email: user.email, role: user.role };
+      const tokenUser = { id: user._id.toString(), email: user.email, role: 'user' };
       const accessToken = generateAccessToken(tokenUser);
       const refreshToken = generateRefreshToken(tokenUser);
       user.refreshToken = refreshToken;
       await user.save();
 
-      res.json({
+      res.status(201).json({
         success: true,
         token: accessToken,
         refreshToken,
@@ -127,7 +687,7 @@ export async function handleRegister(req: Request, res: Response) {
           name: user.name,
           email: user.email,
           avatarUrl: user.avatarUrl,
-          role: user.role,
+          role: 'user',
           plan: user.plan
         }
       });
@@ -147,7 +707,7 @@ export async function handleRegister(req: Request, res: Response) {
       email: normalizedEmail,
       passwordHash,
       avatarUrl,
-      role: 'subscriber' as const,
+      role: 'user' as const,
       plan: 'Free Tier' as const,
       interests: ['AI & Technology'],
       readingStats: { ...INITIAL_USER_PROFILE.readingStats },
@@ -156,11 +716,11 @@ export async function handleRegister(req: Request, res: Response) {
       verificationToken: 'MOCK_VERIFY_TOKEN'
     };
     memoryUserStore.set(normalizedEmail, newUser);
-    const tokenUser = { id, email: normalizedEmail, role: 'subscriber' };
+    const tokenUser = { id, email: normalizedEmail, role: 'user' };
     const accessToken = generateAccessToken(tokenUser);
     const refreshToken = generateRefreshToken(tokenUser);
 
-    res.json({
+    res.status(201).json({
       success: true,
       token: accessToken,
       refreshToken,

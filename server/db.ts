@@ -79,7 +79,7 @@ const UserSchema = new Schema<IUser>({
   email: { type: String, required: true, unique: true, lowercase: true, index: true },
   passwordHash: { type: String, required: true },
   avatarUrl: { type: String, default: '' },
-  role: { type: String, enum: ['user', 'admin', 'subscriber'], default: 'subscriber' },
+  role: { type: String, enum: ['user', 'admin', 'subscriber'], default: 'user' },
   plan: { type: String, enum: ['Free Tier', 'Pro Member', 'Enterprise SaaS'], default: 'Free Tier' },
   interests: { type: [String], default: ['AI & Technology'] },
   readingStats: {
@@ -146,6 +146,10 @@ export interface IArticle extends Document {
     verdict: 'Verified Authentic' | 'Needs Fact-Checking' | 'High Misinformation Risk';
     redFlags: string[];
     factCheckSources: string[];
+    adminReviewStatus?: 'unreviewed' | 'verified_authentic' | 'flagged_misinformation' | 'needs_review';
+    reviewedBy?: string;
+    reviewedAt?: Date;
+    reviewNotes?: string;
   };
   entities: {
     organizations: string[];
@@ -158,13 +162,20 @@ export interface IArticle extends Document {
   bookmarksCount: number;
   sharesCount: number;
   viewsCount: number;
+  views?: number;
   sourceType?: 'admin' | 'dataset' | 'api';
   status?: 'published' | 'draft';
+  featuredImage?: string;
+  language?: string;
+  createdBy?: string;
+  updatedBy?: string;
   isBreaking?: boolean;
   isFeatured?: boolean;
   isTrending?: boolean;
   allowComments?: boolean;
   aiProcessingStatus?: 'completed' | 'pending' | 'failed';
+  createdAt?: Date;
+  updatedAt?: Date;
 }
 
 const ArticleSchema = new Schema<IArticle>({
@@ -182,6 +193,10 @@ const ArticleSchema = new Schema<IArticle>({
   publishedAt: { type: Date, default: Date.now, index: true },
   url: { type: String, required: true },
   imageUrl: { type: String, required: true },
+  featuredImage: { type: String, default: '' },
+  language: { type: String, default: 'en' },
+  createdBy: { type: String, default: 'system' },
+  updatedBy: { type: String, default: '' },
   readTimeMinutes: { type: Number, default: 3 },
   aiSummary: {
     bullets: [String],
@@ -200,7 +215,11 @@ const ArticleSchema = new Schema<IArticle>({
     confidenceScore: { type: Number, default: 90 },
     verdict: { type: String, enum: ['Verified Authentic', 'Needs Fact-Checking', 'High Misinformation Risk'], default: 'Verified Authentic' },
     redFlags: [String],
-    factCheckSources: [String]
+    factCheckSources: [String],
+    adminReviewStatus: { type: String, enum: ['unreviewed', 'verified_authentic', 'flagged_misinformation', 'needs_review'], default: 'unreviewed' },
+    reviewedBy: String,
+    reviewedAt: Date,
+    reviewNotes: String
   },
   entities: {
     organizations: [String],
@@ -213,6 +232,7 @@ const ArticleSchema = new Schema<IArticle>({
   bookmarksCount: { type: Number, default: 0 },
   sharesCount: { type: Number, default: 0 },
   viewsCount: { type: Number, default: 0 },
+  views: { type: Number, default: 0 },
   sourceType: { type: String, enum: ['admin', 'dataset', 'api'], default: 'admin' },
   status: { type: String, enum: ['published', 'draft'], default: 'published' },
   description: { type: String, default: '' },
@@ -223,7 +243,7 @@ const ArticleSchema = new Schema<IArticle>({
   isTrending: { type: Boolean, default: false },
   allowComments: { type: Boolean, default: true },
   aiProcessingStatus: { type: String, enum: ['completed', 'pending', 'failed'], default: 'completed' }
-});
+}, { timestamps: true });
 
 ArticleSchema.index({ title: 'text', excerpt: 'text', content: 'text' });
 ArticleSchema.index({ category: 1, publishedAt: -1 });
